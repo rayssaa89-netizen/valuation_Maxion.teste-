@@ -431,7 +431,157 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 st.warning('A participação de não controladores é preservada na tabela histórica para conferência, e a coluna "lucro_liquido_ajustado" calcula lucro líquido menos a linha de minoritários (quando negativa, isso equivale a somá-la de volta). Na projeção, a participação não é incluída como rubrica nem altera os fluxos usados no valuation. O resultado após IR ainda é usado como aproximação do fluxo de caixa; confirme a metodologia do Excel original antes de tratar os indicadores como equivalentes.')
+# -------------------------------------------------------------------
+# 5. Dashboard executivo
+# -------------------------------------------------------------------
+st.markdown("""
+<style>
+.stApp {background: #08122b;}
+section[data-testid="stSidebar"] {background: #0f1f45;}
+div[data-testid="stMetric"] {
+    background: #0f1f45;
+    border: 1px solid #223c75;
+    padding: 16px 18px;
+    border-radius: 10px;
+}
+div[data-testid="stMetricLabel"] {color: #93a8cc;}
+div[data-testid="stMetricValue"] {color: #eef3fb;}
+.dashboard-note {
+    background: #0f1f45;
+    border-left: 4px solid #4a8bea;
+    padding: 12px 16px;
+    border-radius: 6px;
+    color: #dce7fa;
+}
+</style>
+""", unsafe_allow_html=True)
 
+st.header("5. Dashboard executivo")
+st.caption("Painéis dinâmicos calculados a partir da planilha histórica importada e das premissas acima.")
+
+# Indicadores principais
+k1, k2, k3, k4 = st.columns(4)
+
+k1.metric("VPL do cenário", f"R$ {br(vpl)} mi")
+k2.metric(
+    "TIR do cenário",
+    f"{br(irr_pct)}%" if irr_pct is not None else "Não calculável"
+)
+k3.metric("Payback descontado", payback_text)
+k4.metric(
+    "VPL ÷ ações",
+    f"R$ {br(price)}",
+    help="Indicador do modelo atual; não equivale necessariamente ao valor justo por ação."
+)
+
+# Gráficos
+left, right = st.columns([1.15, 1])
+
+with left:
+    st.subheader("Evolução da receita projetada")
+    revenue_chart = proj_df.set_index("Ano")[["Receita líquida"]].copy()
+    st.bar_chart(revenue_chart, color="#4a8bea")
+    st.caption("Valores em R$ milhões.")
+
+with right:
+    st.subheader("Resultado projetado após IR")
+    earnings_chart = proj_df.set_index("Ano")[[
+        "Resultado após IR, antes de não controladores"
+    ]].copy()
+    st.line_chart(earnings_chart, color="#4fd1a5")
+    st.caption(
+        "O resultado após IR é a aproximação usada atualmente; "
+        "não é fluxo de caixa livre validado."
+    )
+
+# Sensibilidade do VPL à taxa de desconto
+st.divider()
+st.subheader("Matriz de sensibilidade — VPL por taxa de desconto")
+st.write(
+    "Veja como o VPL muda quando a TMA/WACC varia. "
+    "O modelo atual não inclui valor terminal por perpetuidade."
+)
+
+wacc_steps = sorted(set([
+    max(0.0, wacc - 0.02),
+    max(0.0, wacc - 0.01),
+    wacc,
+    wacc + 0.01,
+    wacc + 0.02
+]))
+
+sensitivity_rows = []
+
+for rate in wacc_steps:
+    value = sum(
+        cf / ((1 + rate) ** t)
+        for t, cf in enumerate(cashflows)
+    )
+    sensitivity_rows.append({
+        "TMA / WACC": f"{rate * 100:.2f}%".replace(".", ","),
+        "VPL (R$ milhões)": value,
+        "Indicador por ação (R$)": (value * 1_000_000) / shares
+    })
+
+sensitivity_df = pd.DataFrame(sensitivity_rows).set_index("TMA / WACC")
+
+st.dataframe(
+    sensitivity_df.style.format({
+        "VPL (R$ milhões)": lambda x: f"R$ {br(x)}",
+        "Indicador por ação (R$)": lambda x: f"R$ {br(x)}",
+    }).background_gradient(
+        subset=["VPL (R$ milhões)"],
+        cmap="Blues"
+    ),
+    width="stretch"
+)
+
+# Comparação entre cenários
+st.divider()
+st.subheader("Sensibilidade do indicador por ação")
+
+low_rate = min(wacc_steps)
+high_rate = max(wacc_steps)
+
+low_vpl = sum(
+    cf / ((1 + high_rate) ** t)
+    for t, cf in enumerate(cashflows)
+)
+
+high_vpl = sum(
+    cf / ((1 + low_rate) ** t)
+    for t, cf in enumerate(cashflows)
+)
+
+range_df = pd.DataFrame({
+    "Cenário": [
+        "WACC mais alto",
+        "WACC-base",
+        "WACC mais baixo"
+    ],
+    "Indicador por ação (R$)": [
+        (low_vpl * 1_000_000) / shares,
+        (vpl * 1_000_000) / shares,
+        (high_vpl * 1_000_000) / shares
+    ]
+}).set_index("Cenário")
+
+st.bar_chart(range_df, color="#4a8bea")
+
+st.caption(
+    "Esta é uma análise de sensibilidade, não um Football Field completo. "
+    "Para comparar FCD, múltiplos EV/EBITDA, P/L e cotações de mercado, "
+    "são necessários dados e cálculos específicos para cada método."
+)
+
+st.markdown(
+    '<div class="dashboard-note"><strong>Nota metodológica:</strong> '
+    'os gráficos refletem os cálculos atualmente implementados. '
+    'Antes de interpretar os resultados como valor justo da Iochpe-Maxion, '
+    'valide o fluxo de caixa, a dívida líquida, o número de ações e '
+    'a metodologia de valuation do TCC.</div>',
+    unsafe_allow_html=True
+)
 export_buffer = BytesIO()
 with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
     hist.to_excel(writer, sheet_name="Historico importado", index=False)
