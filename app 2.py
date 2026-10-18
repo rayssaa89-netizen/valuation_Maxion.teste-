@@ -529,13 +529,9 @@ st.dataframe(
     sensitivity_df.style.format({
         "VPL (R$ milhões)": lambda x: f"R$ {br(x)}",
         "Indicador por ação (R$)": lambda x: f"R$ {br(x)}",
-    }).background_gradient(
-        subset=["VPL (R$ milhões)"],
-        cmap="Blues"
-    ),
+    }),
     width="stretch"
 )
-
 # Comparação entre cenários
 st.divider()
 st.subheader("Sensibilidade do indicador por ação")
@@ -581,6 +577,11 @@ st.markdown(
     'valide o fluxo de caixa, a dívida líquida, o número de ações e '
     'a metodologia de valuation do TCC.</div>',
     unsafe_allow_html=True
+)
+st.warning(
+    "O resultado após IR é utilizado como aproximação do fluxo de caixa. "
+    "Confirme a metodologia do Excel original antes de interpretar "
+    "os indicadores como equivalentes a um valuation completo."
 )
 export_buffer = BytesIO()
 with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
