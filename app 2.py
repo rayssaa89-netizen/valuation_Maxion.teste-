@@ -358,7 +358,63 @@ else:
     payback_text = f"{total_months // 12} ano(s) e {total_months % 12} mês(es)"
 m3.metric("Payback descontado", payback_text)
 m4.metric("VPL ÷ ações", f"R$ {br(price)}")
-st.dataframe(pd.DataFrame(detail).style.format({"Fluxo usado (após IR, antes de não controladores; R$ mi)": "{:,.2f}", "Valor presente (R$ mi)": "{:,.2f}", "Acumulado descontado (R$ mi)": "{:,.2f}"}), width="stretch", hide_index=True)
+
+df_detail = pd.DataFrame(detail)
+
+def cor_valor(valor):
+    try:
+        numero = float(valor)
+        if numero < 0:
+            return "color: #ff8b8b; font-weight: 600;"
+        if numero > 0:
+            return "color: #75dcff; font-weight: 600;"
+    except (ValueError, TypeError):
+        pass
+    return "color: #f4f8ff;"
+
+colunas_valores = [
+    "Fluxo usado (após IR, antes de não controladores; R$ mi)",
+    "Valor presente (R$ mi)",
+    "Acumulado descontado (R$ mi)",
+]
+
+estilo_tabela = (
+    df_detail.style
+    .format({col: "{:,.2f}" for col in colunas_valores})
+    .map(cor_valor, subset=colunas_valores)
+    .set_table_styles([
+        {
+            "selector": "th",
+            "props": [
+                ("background-color", "#0879bd"),
+                ("color", "#ffffff"),
+                ("font-weight", "bold"),
+                ("border", "1px solid #19c6ff"),
+            ],
+        },
+        {
+            "selector": "td",
+            "props": [
+                ("border-bottom", "1px solid #243d56"),
+                ("padding", "10px"),
+            ],
+        },
+        {
+            "selector": "tbody tr:nth-child(odd)",
+            "props": [("background-color", "#10243b")],
+        },
+        {
+            "selector": "tbody tr:nth-child(even)",
+            "props": [("background-color", "#0b1727")],
+        },
+    ])
+)
+
+st.dataframe(
+    estilo_tabela,
+    width="stretch",
+    hide_index=True,
+)
 
 st.warning('A participação de não controladores é preservada na tabela histórica para conferência, e a coluna "lucro_liquido_ajustado" calcula lucro líquido menos a linha de minoritários (quando negativa, isso equivale a somá-la de volta). Na projeção, a participação não é incluída como rubrica nem altera os fluxos usados no valuation. O resultado após IR ainda é usado como aproximação do fluxo de caixa; confirme a metodologia do Excel original antes de tratar os indicadores como equivalentes.')
 
