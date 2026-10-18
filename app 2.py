@@ -430,7 +430,6 @@ st.download_button(
     file_name="Valuation_Iochpe_Maxion_calculado.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
-st.warning('A participação de não controladores é preservada na tabela histórica para conferência, e a coluna "lucro_liquido_ajustado" calcula lucro líquido menos a linha de minoritários (quando negativa, isso equivale a somá-la de volta). Na projeção, a participação não é incluída como rubrica nem altera os fluxos usados no valuation. O resultado após IR ainda é usado como aproximação do fluxo de caixa; confirme a metodologia do Excel original antes de tratar os indicadores como equivalentes.')
 # -------------------------------------------------------------------
 # 5. Dashboard executivo
 # -------------------------------------------------------------------
