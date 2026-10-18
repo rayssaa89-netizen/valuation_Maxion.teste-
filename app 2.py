@@ -29,6 +29,44 @@ else:
 st.title("Valuation Iochpe-Maxion — análise dinâmica")
 st.caption("Os resultados são recalculados com base no arquivo histórico importado e nas premissas editáveis. Valores financeiros em R$ milhões, salvo indicação contrária.")
 
+# Identidade visual azul-claro — AutoValuation
+st.markdown("""
+<style>
+/* Cartões de indicadores */
+div[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #102b4c, #071a30);
+    border: 1px solid #16bfff;
+    border-top: 4px solid #16bfff;
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 4px 16px rgba(0, 174, 255, 0.12);
+}
+
+/* Rótulos */
+div[data-testid="stMetricLabel"] {
+    color: #73d8ff !important;
+    font-weight: 600;
+}
+
+/* Valores */
+div[data-testid="stMetricValue"] {
+    color: #f5fbff !important;
+    font-weight: 700;
+}
+
+/* Títulos da página */
+h1, h2, h3 {
+    color: #eaf7ff;
+}
+
+/* Contorno de tabelas */
+div[data-testid="stDataFrame"] {
+    border: 1px solid #16bfff;
+    border-radius: 10px;
+    overflow: hidden;
+}
+</style>
+""", unsafe_allow_html=True)
 
 def norm(value):
     if pd.isna(value):
