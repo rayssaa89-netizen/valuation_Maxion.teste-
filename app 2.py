@@ -586,14 +586,34 @@ st.warning(
 export_buffer = BytesIO()
 
 with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
-    hist_df.to_excel(writer, sheet_name="Historico", index=False)
-    proj_df.to_excel(writer, sheet_name="Projecao", index=False)
-    fc_df.to_excel(writer, sheet_name="Fluxo de Caixa", index=False)
+    hist.to_excel(
+        writer,
+        sheet_name="Historico importado",
+        index=False
+    )
+
+    proj_df.to_excel(
+        writer,
+        sheet_name="Projecao 2026-2030",
+        index=False
+    )
+
+    av_table.to_excel(
+        writer,
+        sheet_name="Medias AV",
+        index=False
+    )
+
+    pd.DataFrame(detail).to_excel(
+        writer,
+        sheet_name="Fluxos e VPL",
+        index=False
+    )
 
 st.download_button(
     label="Baixar análise calculada em Excel",
     data=export_buffer.getvalue(),
-    file_name="valuation_iochpe_maxion.xlsx",
+    file_name="Valuation_Iochpe_Maxion_calculado.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    key="download_valuation_excel"
+    key="download_valuation_calculado"
 )
