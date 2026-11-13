@@ -456,21 +456,6 @@ with c3:
         "Confirme essa convenção com o modelo do TCC."
     )
 
-# ----------------------------------------------------------------------
-# Base das médias de análise vertical (AV)
-# ----------------------------------------------------------------------
-st.subheader("Base das médias de análise vertical (AV)")
-modo_av = st.radio(
-    "Fonte das médias AV usadas na projeção",
-    [
-        "TCC — médias da Tabela 3 (editáveis)",
-        "Planilha importada (calculadas da DRE)",
-    ],
-    horizontal=True,
-    key="modo_av",
-)
-usar_tcc = modo_av.startswith("TCC")
-
 # Médias da Tabela 3/6 do TCC, em % da receita líquida.
 TCC_AV_PCT = {
     "lucro_bruto": 11.880614,
