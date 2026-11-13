@@ -664,6 +664,22 @@ with t_dados:
             st.stop()
         hist_all, ds_id, company_default = loaded
         is_ex = False
+        if re.search(r"iochpe|maxion", company_default, re.I):
+            usar_tcc = st.checkbox(
+                "Planilha da Iochpe-Maxion: usar a DRE 2016–2025 e as premissas "
+                "do TCC (resultado idêntico ao trabalho)",
+                value=True, key="usar_tcc_imp",
+                help="A planilha oficial (3T26) reapresentou 2018 e 2025 e "
+                     "inclui 2015, então difere do Excel do TCC. Desmarque para "
+                     "analisar com os dados oficiais.")
+            if usar_tcc:
+                with st.expander("Planilha oficial lida (só para conferência)"):
+                    st.dataframe(hist_all, width="stretch", hide_index=True)
+                hist_all, ds_id, company_default, is_ex = (
+                    MAXION_TCC.copy(), "ex", "Iochpe-Maxion", True)
+                st.success("Usando a DRE do TCC (2016–2025) e as premissas do "
+                           "trabalho. O período histórico pode ser ajustado na "
+                           "aba 2.")
     with st.expander("Conferir a DRE histórica padronizada (R$ milhões)"):
         show = hist_all.rename(columns={
             "receita": "Receita líquida", "custo": "Custos (CPV)",
