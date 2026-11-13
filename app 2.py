@@ -569,10 +569,9 @@ def payback_calc(flows, inv, rate):
 def payback_txt(p, curto=False):
     if p is None:
         return "Não recupera no horizonte"
-    a = int(p)
-    resto = (p - a) * 12
-    m = int(resto)
-    d = int((resto - m) * 30)
+    tot = int(round(p * 360))
+    a, r = divmod(tot, 360)
+    m, d = divmod(r, 30)
     return f"{a}a {m}m {d}d" if curto else f"{a} ano(s), {m} mês(es) e {d} dia(s)"
 
 
@@ -867,11 +866,15 @@ pbs = payback_calc(res["flow"], inv, 0.0)
 vp_fluxos = vpl + inv
 il = vp_fluxos / inv if inv > 0 else None
 
-detail_rows, acc = [], -inv
+detail_rows, acc = [{"Ano": anos_proj[0] - 1, "t": 0, "Fluxo usado (R$ mi)": -float(inv),
+                     "Fator de desconto": 1.0, "Valor presente (R$ mi)": -float(inv),
+                     "Acumulado descontado (R$ mi)": -float(inv)}], -float(inv)
 for i, a in enumerate(anos_proj, 1):
-    pv = float(res["flow"][i - 1]) / (1 + wacc) ** i
+    fator = 1 / (1 + wacc) ** i
+    pv = float(res["flow"][i - 1]) * fator
     acc += pv
-    detail_rows.append({"Ano": a, "Fluxo usado (R$ mi)": float(res["flow"][i - 1]),
+    detail_rows.append({"Ano": a, "t": i, "Fluxo usado (R$ mi)": float(res["flow"][i - 1]),
+                        "Fator de desconto": fator,
                         "Valor presente (R$ mi)": pv,
                         "Acumulado descontado (R$ mi)": acc})
 df_detail = pd.DataFrame(detail_rows)
@@ -956,14 +959,14 @@ with t_viab:
               delta="VPL positivo" if ok else "-VPL negativo")
     if irr_v is not None:
         m2.metric("TIR", f"{br(irr_v * 100)}%",
-                  delta=f"{(irr_v - wacc) * 100:+.2f} p.p. vs WACC".replace(".", ","))
+                  delta=f"{(irr_v - wacc) * 100:+.2f}".replace(".", ",") + " p.p. vs WACC")
     else:
         m2.metric("TIR", "Não calculável")
     m3.metric("Payback descontado", payback_txt(pbd, curto=True),
               help=payback_txt(pbd))
     if shares > 0:
         m4.metric("VPL por ação", f"R$ {br(vpl * 1e6 / shares)}",
-                  help="VPL ÷ ações. Não é preço-alvo: não considera dívida líquida.")
+                  help="VPL ÷ ações informadas (ações a emitir). Indicador do projeto, não preço-alvo: não considera dívida líquida.")
     else:
         m4.metric("Índice de lucratividade", br(il) if il is not None else "—",
                   help="Valor presente dos fluxos ÷ investimento inicial.")
@@ -972,11 +975,20 @@ with t_viab:
         f"{payback_txt(pbs, curto=True)} · índice de lucratividade: "
         f"{br(il) if il is not None else '—'}"
         + (" · valor terminal incluído" if tvg is not None else ""))
+    if pbd is not None:
+        k_ = int(pbd)
+        if 0 <= k_ < len(df_detail) - 1:
+            ant_ = float(df_detail["Acumulado descontado (R$ mi)"].iloc[k_])
+            pv_ = float(df_detail["Valor presente (R$ mi)"].iloc[k_ + 1])
+            st.caption(f"Payback descontado = {k_} ano(s) completos + "
+                       f"({br(-ant_)} ÷ {br(pv_)}) = {br(pbd)} anos "
+                       f"≈ {payback_txt(pbd)}.")
     interp = interpretar(vpl, irr_v, pbd, wacc, H, inv)
     for line in interp:
         st.markdown(f"- {line}")
     tabela_html(df_detail,
-                {"Ano": lambda v: str(int(v)),
+                {"Ano": lambda v: str(int(v)), "t": lambda v: str(int(v)),
+                 "Fator de desconto": lambda v: f"{v:.4f}".replace(".", ","),
                  "Fluxo usado (R$ mi)": n2, "Valor presente (R$ mi)": n2,
                  "Acumulado descontado (R$ mi)": n2},
                 ["Fluxo usado (R$ mi)", "Valor presente (R$ mi)",
@@ -996,7 +1008,7 @@ with t_viab:
         st.plotly_chart(estilo(fig_rev, "Receita líquida — histórico e projeção (R$ mi)"),
                         width="stretch")
     with right:
-        acum = [-inv] + df_detail["Acumulado descontado (R$ mi)"].tolist()
+        acum = df_detail["Acumulado descontado (R$ mi)"].tolist()
         anos_l = ["Inv."] + [str(a) for a in anos_proj]
         fig_acc = go.Figure(go.Bar(
             x=anos_l, y=acum,
@@ -1133,7 +1145,9 @@ def build_html():
     fp = {c: n2 for c in proj_df.columns if c not in ("Ano", "Crescimento (%)")}
     fp["Ano"] = lambda v: str(int(v))
     fp["Crescimento (%)"] = pct
-    fd = {"Ano": lambda v: str(int(v)), "Fluxo usado (R$ mi)": n2,
+    fd = {"Ano": lambda v: str(int(v)), "t": lambda v: str(int(v)),
+          "Fator de desconto": lambda v: f"{v:.4f}".replace(".", ","),
+          "Fluxo usado (R$ mi)": n2,
           "Valor presente (R$ mi)": n2, "Acumulado descontado (R$ mi)": n2}
     fs = {"Crescimento (p.p.)": n2, "Margem (p.p.)": n2, "Receita final": n2,
           "VPL (R$ mi)": n2, "TIR (%)": pct, "Payback (anos)": n2}
