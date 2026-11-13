@@ -635,9 +635,9 @@ st.caption(
     "indicação contrária."
 )
 
-t_dados, t_prem, t_proj, t_viab, t_risco, t_comp, t_rel = st.tabs([
+t_dados, t_prem, t_proj, t_viab, t_risco, t_rel = st.tabs([
     "1 · Dados", "2 · Premissas", "3 · Projeção", "4 · Viabilidade",
-    "5 · Cenários e sensibilidade", "6 · Comparar empresas", "7 · Relatório",
+    "5 · Cenários e sensibilidade", "6 · Relatório",
 ])
 
 # ---------------------------------------------------------------- 1. DADOS
@@ -695,10 +695,15 @@ with t_prem:
     company = p1.text_input("Nome da empresa", value=company_default,
                             key=f"nome_{ds_id}")
     anos_hist = [int(a) for a in hist_all["Ano"]]
-    lo, hi = p2.select_slider(
-        "Período histórico analisado", options=anos_hist,
-        value=(anos_hist[0], anos_hist[-1]), key=f"per_{ds_id}",
-    )
+    pa, pb = p2.columns(2)
+    lo = pa.selectbox("Período histórico: de", anos_hist, index=0,
+                      key=f"lo_{ds_id}")
+    opts_hi = [a for a in anos_hist if a >= lo]
+    hi = pb.selectbox("Período histórico: até", opts_hi, index=len(opts_hi) - 1,
+                      key=f"hi_{ds_id}_{lo}")
+    p2.caption(f"Período analisado: {lo}–{hi} ({hi - lo + 1} anos). A projeção "
+               f"começa em {hi + 1}. As médias de margem e o CAGR usam só "
+               "esses anos.")
     hist = hist_all[(hist_all["Ano"] >= lo) & (hist_all["Ano"] <= hi)]
     hist = hist.reset_index(drop=True)
     if len(hist) < 3:
@@ -1046,76 +1051,79 @@ with t_risco:
     st.plotly_chart(estilo(fig_sc, "VPL por cenário (R$ mi)", h=320), width="stretch")
 
     st.subheader("Sensibilidade do VPL à taxa de desconto (WACC)")
-    st.write("Como o VPL e o payback mudam quando a TMA/WACC varia em torno do "
+    st.write("Como VPL, TIR e payback mudam quando a TMA/WACC varia em torno do "
              "valor-base. O VPL zera quando o WACC iguala a TIR.")
-    waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
+    sc1, sc2, sc3 = st.columns(3)
+    d_min = sc1.number_input("Variação mínima (p.p.)", -20.0, 0.0, -5.0, 0.5,
+                             key="sens_min")
+    d_max = sc2.number_input("Variação máxima (p.p.)", 0.0, 20.0, 5.0, 0.5,
+                             key="sens_max")
+    d_step = sc3.number_input("Passo (p.p.)", 0.25, 5.0, 1.0, 0.25,
+                              key="sens_step")
+    n_pts = int(round((d_max - d_min) / d_step)) + 1
+    deltas = [d_min + i * d_step for i in range(n_pts)]
+    if 0.0 not in [round(d, 6) for d in deltas]:
+        deltas = sorted(deltas + [0.0])
+    waccs = [max(wacc + d / 100.0, 0.001) for d in deltas]
     rows = []
-    for w in waccs:
-        v_, _, p_ = indicadores(res, w)
-        row = {"TMA / WACC": pct(w * 100), "VPL (R$ mi)": v_,
-               "Payback descontado (anos)": p_ if p_ is not None else np.nan}
+    for w_ in waccs:
+        v_, i_, p_ = indicadores(res, w_)
+        row = {"TMA / WACC": pct(w_ * 100), "VPL (R$ mi)": v_,
+               "TIR (%)": i_ * 100 if i_ is not None else np.nan,
+               "Payback descontado (anos)": p_ if p_ is not None else np.nan,
+               "VPL ÷ investimento": v_ / inv if inv > 0 else np.nan}
         if shares > 0:
             row["VPL por ação (R$)"] = v_ * 1_000_000 / shares
+        row["Viável?"] = "Sim" if v_ > 0 else "Não"
         rows.append(row)
     sens_df = pd.DataFrame(rows)
-    base_idx = int(np.argmin([abs(w - wacc) for w in waccs]))
-    cs1, cs2 = st.columns([1, 1])
-    with cs1:
-        fm = {c: n2 for c in sens_df.columns if c != "TMA / WACC"}
-        tabela_html(sens_df, fm, ["VPL (R$ mi)"], destaque=base_idx)
-        st.caption("Linha destacada = WACC-base. Payback vazio (—) = não "
-                   "recupera o investimento no horizonte.")
-    with cs2:
-        fig = go.Figure(go.Scatter(
-            x=[w * 100 for w in waccs], y=sens_df["VPL (R$ mi)"],
-            mode="lines+markers", line=dict(color=AZUL, width=3),
-            marker=dict(color=[VERDE if v >= 0 else CORAL for v in sens_df["VPL (R$ mi)"]], size=9),
-            hovertemplate="WACC %{x:.1f}%<br>VPL R$ %{y:,.0f} mi<extra></extra>"))
-        fig.add_hline(y=0, line_color="#93a8cc")
-        fig.update_xaxes(title="WACC (%)")
-        fig.update_yaxes(title="VPL (R$ mi)")
-        st.plotly_chart(estilo(fig, "VPL por taxa de desconto (R$ mi)", h=360),
-                        width="stretch")
+    base_idx = int(np.argmin([abs(w_ - wacc) for w_ in waccs]))
 
-# ----------------------------------------------------- 6. COMPARAR EMPRESAS
-with t_comp:
-    st.subheader("Comparar empresas")
-    st.write("Analise uma empresa, clique em adicionar, troque a planilha na "
-             "aba 1 e repita. A tabela abaixo compara todas.")
-    st.session_state.setdefault("comparacao", [])
-    nome_cmp = st.text_input("Nome na comparação", value=company, key=f"nc_{ds_id}")
-    b1, b2 = st.columns([1, 1])
-    if b1.button("➕ Adicionar esta análise à comparação"):
-        ml = ((hist["ebt"] + hist["imposto"]) / hist["receita"]).mean() \
-            if hist["imposto"].notna().any() else np.nan
-        st.session_state["comparacao"] = [
-            c for c in st.session_state["comparacao"] if c["Empresa"] != nome_cmp
-        ] + [{
-            "Empresa": nome_cmp, "Cenário": cenario,
-            "Horizonte (anos)": H, "CAGR histórico (%)": cagr * 100,
-            "Margem antes do IR (%)": av["ebt"] * 100,
-            "WACC (%)": wacc * 100, "Investimento (R$ mi)": inv,
-            "VPL (R$ mi)": vpl,
-            "VPL / investimento": (vpl / inv) if inv > 0 else np.nan,
-            "TIR (%)": irr_v * 100 if irr_v is not None else np.nan,
-            "Payback (anos)": pbd if pbd is not None else np.nan,
-        }]
-    if b2.button("Limpar comparação"):
-        st.session_state["comparacao"] = []
-    comp = pd.DataFrame(st.session_state["comparacao"])
-    if comp.empty:
-        st.info("Nenhuma empresa adicionada ainda.")
-    else:
-        fm = {c: n2 for c in comp.columns if c not in ("Empresa", "Cenário", "Horizonte (anos)")}
-        fm["Horizonte (anos)"] = lambda v: str(int(v))
-        tabela_html(comp, fm, ["VPL (R$ mi)"])
-        figc = px.bar(comp, x="Empresa", y="VPL / investimento",
-                      text_auto=".2f", color_discrete_sequence=[AZUL])
-        st.plotly_chart(estilo(figc, "Criação de valor: VPL ÷ investimento", h=320),
-                        width="stretch")
-        st.caption("Compare empresas pelo VPL ÷ investimento, que ajusta pelo tamanho do projeto.")
+    be1, be2, be3 = st.columns(3)
+    be1.metric("WACC de equilíbrio (= TIR)",
+               f"{br(irr_v * 100)}%" if irr_v is not None else "—",
+               help="Taxa de desconto em que o VPL é zero.")
+    if irr_v is not None:
+        be2.metric("Folga sobre o WACC-base",
+                   f"{br((irr_v - wacc) * 100)} p.p.",
+                   help="Quanto o WACC pode subir antes de o VPL ficar negativo.")
+    pos_w = [w_ for w_, r_ in zip(waccs, rows) if r_["VPL (R$ mi)"] > 0]
+    be3.metric("Pontos da faixa com VPL > 0", f"{len(pos_w)} de {len(waccs)}")
 
-# ---------------------------------------------------------- 7. RELATÓRIO
+    fm = {c: n2 for c in sens_df.columns if c not in ("TMA / WACC", "Viável?")}
+    fm["TIR (%)"] = pct
+    tabela_html(sens_df, fm, ["VPL (R$ mi)"], destaque=base_idx)
+    st.caption("Linha destacada = WACC-base. Payback vazio (nan) = não "
+               "recupera o investimento no horizonte.")
+
+    fig = go.Figure()
+    cores_sc = {"Base": AZUL, "Otimista": VERDE, "Pessimista": CORAL}
+    mat = {"TMA / WACC": [pct(w_ * 100) for w_ in waccs]}
+    for nome_s, (gd_s, md_s) in SCEN.items():
+        r_s = modelo(gd_s, md_s)
+        ys = [indicadores(r_s, w_)[0] for w_ in waccs]
+        mat[f"VPL {nome_s} (R$ mi)"] = ys
+        fig.add_trace(go.Scatter(
+            x=[w_ * 100 for w_ in waccs], y=ys, mode="lines+markers", name=nome_s,
+            line=dict(color=cores_sc[nome_s], width=4 if nome_s == cenario else 2),
+            hovertemplate=nome_s + " · WACC %{x:.2f}%<br>VPL R$ %{y:,.0f} mi<extra></extra>"))
+    fig.add_hline(y=0, line_color="#93a8cc")
+    fig.add_vline(x=wacc * 100, line_dash="dash", line_color="#93a8cc",
+                  annotation_text="WACC-base")
+    fig.update_xaxes(title="WACC (%)")
+    fig.update_yaxes(title="VPL (R$ mi)")
+    st.plotly_chart(estilo(fig, "VPL por taxa de desconto e cenário (R$ mi)", h=380),
+                    width="stretch")
+
+    st.subheader("VPL por WACC e cenário")
+    mat_df = pd.DataFrame(mat)
+    tabela_html(mat_df, {c: n2 for c in mat_df.columns if c != "TMA / WACC"},
+                [c for c in mat_df.columns if c != "TMA / WACC"],
+                destaque=base_idx)
+    st.caption("Mostra se a conclusão de viabilidade se mantém nos três "
+               "cenários quando a taxa de desconto muda.")
+
+# ---------------------------------------------------------- 6. RELATÓRIO
 def build_excel():
     buf = BytesIO()
     prem = pd.DataFrame([
@@ -1133,9 +1141,6 @@ def build_excel():
         proj_df.to_excel(w, sheet_name="Projecao", index=False)
         df_detail.to_excel(w, sheet_name="Fluxos e VPL", index=False)
         scen_df.to_excel(w, sheet_name="Cenarios", index=False)
-        if st.session_state.get("comparacao"):
-            pd.DataFrame(st.session_state["comparacao"]).to_excel(
-                w, sheet_name="Comparacao", index=False)
     return buf.getvalue()
 
 
