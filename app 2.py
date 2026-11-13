@@ -566,24 +566,9 @@ with c2:
         "TMA / WACC (%)",
         min_value=0.0, max_value=100.0, value=13.0, step=0.25, format="%.2f",
     )
-    metodo_ir = st.radio(
-        "Cálculo do IR projetado",
-        [
-            "Alíquota fixa sobre o lucro antes do IR (padrão do TCC)",
-            "Média histórica do IR ÷ receita (do Excel)",
-        ],
-        key="metodo_ir",
-        help=(
-            "O trabalho usa alíquota de 35% sobre o lucro antes do IR. "
-            "A outra opção usa a média histórica de IR/receita do Excel "
-            "(alíquota efetiva de ~45%)."
-        ),
-    )
-    usar_ir_av = metodo_ir.startswith("Média")
     tax_pct = st.number_input(
-        "Alíquota de IR fixa (%)",
+        "Alíquota de IR projetada (%)",
         min_value=0.0, max_value=100.0, value=35.0, step=1.0, format="%.2f",
-        disabled=usar_ir_av,
     )
 with c3:
     shares = st.number_input(
@@ -643,10 +628,7 @@ for i, year in enumerate(years_proj):
         + values["cambio"]
     )
     pretax = ebit + financial_result
-    if usar_ir_av:
-        tax = rev * av_means["imposto_historico"]
-    else:
-        tax = -max(pretax, 0.0) * tax_pct / 100.0
+    tax = -max(pretax, 0.0) * tax_pct / 100.0
     net = pretax + tax
     net_income.append(net)
     projection.append({
@@ -758,30 +740,6 @@ colunas_valores = [COL_FLUXO, COL_VP, COL_ACUM]
 fmt_detail = {c: n2 for c in colunas_valores}
 fmt_detail["Ano"] = lambda v: str(int(v))
 tabela_html(df_detail, fmt_detail, colunas_valores)
-
-# ----------------------------------------------------------------------
-# Conferência com a planilha do TCC (valores do Excel original, aba VPL-TIR-PBD)
-# ----------------------------------------------------------------------
-TCC_REF = {"vpl": 381.50, "tir": 32.30, "pbd": 3.5}
-with st.expander("Conferência com a planilha do TCC"):
-    conf = pd.DataFrame([
-        {"Indicador": "VPL (R$ mi)", "TCC (Excel)": TCC_REF["vpl"], "Este modelo": vpl},
-        {"Indicador": "TIR (%)", "TCC (Excel)": TCC_REF["tir"],
-         "Este modelo": irr_pct if irr_pct is not None else np.nan},
-        {"Indicador": "Payback (anos)", "TCC (Excel)": TCC_REF["pbd"],
-         "Este modelo": pbd if pbd is not None else np.nan},
-    ])
-    conf["Diferença"] = conf["Este modelo"] - conf["TCC (Excel)"]
-    tabela_html(
-        conf, {"TCC (Excel)": n2, "Este modelo": n2, "Diferença": n2},
-        ["Diferença"],
-    )
-    st.caption(
-        "Valores do trabalho: VPL R$ 381,50 mi · TIR 32,30% · "
-        "R$ 16,48 por ação · payback 3 anos e 6 meses (3,5 anos). "
-        "Com a alíquota fixa de 35% o app reproduz VPL, TIR e valor por "
-        "ação; o payback calculado pela fórmula é de ~3,04 anos."
-    )
 
 # ======================================================================
 # 5. DASHBOARD EXECUTIVO
