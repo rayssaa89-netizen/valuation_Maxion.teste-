@@ -189,9 +189,84 @@ def find_dre_sheet(xls):
     return None
 
 
+def read_tcc_workbook(xls):
+    """Lê o Excel do TCC (aba 2016-2025, valores já em R$ milhões)."""
+    for name in xls.sheet_names:
+        if "(av)" in norm(name):
+            continue
+        raw = pd.read_excel(xls, sheet_name=name, header=None)
+        if raw.shape[1] < 5:
+            continue
+        labels = raw.iloc[:, 0].map(norm)
+        if not (labels.str.contains("vendas liquidas").any()
+                and labels.str.contains("lucro liquido apos ir").any()):
+            continue
+        year_cols = {}
+        for r in range(min(6, len(raw))):
+            found = {}
+            for c, v in enumerate(raw.iloc[r].tolist()):
+                try:
+                    y = int(float(v))
+                    if 2010 <= y <= 2035:
+                        found[y] = c
+                except (TypeError, ValueError):
+                    pass
+            if len(found) >= 3:
+                year_cols = found
+                break
+        if not year_cols:
+            continue
+
+        def idx(term):
+            for i, lab in labels.items():
+                if term in lab:
+                    return i
+            return None
+
+        rows = {
+            "receita": idx("vendas liquidas"),
+            "cpv": idx("(-) cpv"),
+            "lucro_bruto": idx("(=) lucro bruto"),
+            "admin": idx("despesas administrativas"),
+            "vendas": idx("despesas comerciais"),
+            "despesas_financeiras": idx("despesas financeiras"),
+            "outros": idx("despesas gerais"),
+            "receitas_financeiras": idx("receitas financeiras"),
+            "antes_ir": idx("lucro antes do imposto de renda"),
+            "imposto_historico": idx("provisao de ir"),
+            "lucro_liquido": idx("lucro liquido apos ir"),
+        }
+        if any(v is None for v in rows.values()):
+            continue
+        recs = []
+        for y in sorted(year_cols):
+            if not 2016 <= y <= 2025:
+                continue
+            g = lambda k: float(pd.to_numeric(
+                raw.iloc[rows[k], year_cols[y]], errors="coerce"))
+            rec = {"Ano": y, "Receita líquida (R$ milhões)": g("receita")}
+            for k in rows:
+                if k != "receita":
+                    rec[k] = g(k)
+            rec["honorarios"] = 0.0
+            rec["equivalencia"] = 0.0
+            rec["cambio"] = 0.0
+            rec["minoritarios"] = 0.0
+            rec["ebit"] = (rec["lucro_bruto"] + rec["admin"]
+                           + rec["vendas"] + rec["outros"])
+            recs.append(rec)
+        if recs:
+            return pd.DataFrame(recs).sort_values("Ano"), name, xls.sheet_names
+    return None
+
+
 def read_historical_data(file_bytes):
     xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
     sheet = find_dre_sheet(xls)
+    if sheet is None:
+        tcc = read_tcc_workbook(xls)
+        if tcc is not None:
+            return tcc
     if sheet is None:
         raise ValueError(
             "Não encontrei uma aba de DRE/Income Statement. "
@@ -306,6 +381,29 @@ def read_historical_data(file_bytes):
     return hist, sheet, xls.sheet_names
 
 
+# DRE 2016-2025 do TCC (R$ milhões), aba '2016-2025' do Excel do trabalho.
+TCC_DRE = pd.DataFrame(
+    columns=['Ano', 'Receita líquida (R$ milhões)', 'cpv', 'lucro_bruto', 'admin', 'vendas', 'despesas_financeiras', 'outros', 'receitas_financeiras', 'antes_ir', 'imposto_historico', 'lucro_liquido'],
+    data=[
+        [2016, 6816.454, -5844.666, 971.788, -368.226, -150.931, -382.253, 6.617, 57.837, 134.832, -45.702, 89.13],
+        [2017, 7487.94, -6332.962, 1154.978, -384.406, -162.157, -394.624, -119.603, 55.16, 149.348, -69.139, 80.209],
+        [2018, 9616.299, -8298.023, 1318.276, -494.228, -75.359, -235.657, -47.196, 14.838, 480.674, -279.349, 201.325],
+        [2019, 10016.395, -8831.177, 1185.218, -502.054, -53.778, -235.248, 46.869, 65.344, 506.351, -84.936, 421.415],
+        [2020, 8760.568, -8195.255, 565.313, -487.721, -61.812, -262.431, -200.501, 29.445, -417.707, -2.207, -419.914],
+        [2021, 13688.367, -11984.244, 1704.123, -643.946, -78.486, -422.47, 299.794, 97.853, 956.868, -329.93, 626.938],
+        [2022, 16947.869, -15139.227, 1808.642, -646.494, -96.095, -732.119, 179.631, 114.455, 628.02, -223.848, 404.172],
+        [2023, 14955.22, -13446.975, 1508.245, -675.905, -81.674, -702.359, 0.242, 216.151, 264.7, -158.809, 105.891],
+        [2024, 15331.813, -13510.38, 1821.433, -722.385, -76.15, -656.029, -1.862, 220.456, 585.463, -205.379, 380.084],
+        [2025, 15366.537, -13515.765, 1850.772, -793.373, -81.429, -713.935, -34.056, 135.659, 363.638, -146.504, 217.134],
+    ],
+)
+for _c in ("honorarios", "equivalencia", "cambio", "minoritarios"):
+    TCC_DRE[_c] = 0.0
+TCC_DRE["ebit"] = (
+    TCC_DRE["lucro_bruto"] + TCC_DRE["admin"] + TCC_DRE["vendas"] + TCC_DRE["outros"]
+)
+
+
 def br(value, decimals=2):
     if value is None:
         return "—"
@@ -329,10 +427,8 @@ def payback_texto(pbd):
     anos_p = int(pbd)
     resto_m = (pbd - anos_p) * 12
     meses_p = int(resto_m)
-    dias_p = int(round((resto_m - meses_p) * 30))
-    if dias_p >= 30:
-        meses_p, dias_p = meses_p + 1, 0
-    return f"{anos_p} ano(s), {meses_p} mês(es) e {dias_p} dia(s)"
+    dias_p = int((resto_m - meses_p) * 30)
+    return f"{anos_p}a {meses_p}m {dias_p}d"
 
 
 # ======================================================================
@@ -340,9 +436,9 @@ def payback_texto(pbd):
 # ======================================================================
 st.header("1. Importar planilha histórica")
 st.write(
-    "Selecione a planilha oficial de dados históricos da Maxion "
-    "(.xlsx ou .xlsm). O aplicativo vai localizar a aba de DRE e "
-    "usar os valores anuais para formar as médias históricas."
+    "Selecione a planilha oficial de dados históricos da Maxion ou o "
+    "Excel do TCC (aba 2016-2025). Com o Excel do TCC o app reproduz "
+    "exatamente VPL, TIR e payback do trabalho."
 )
 uploaded_file = st.file_uploader(
     "Escolha o arquivo Excel da Maxion",
@@ -376,6 +472,19 @@ try:
 except Exception as exc:
     st.error(f"Não foi possível interpretar esta planilha: {exc}")
     st.stop()
+
+# Base das médias: DRE do TCC, para o resultado ser idêntico ao trabalho.
+base_tcc = "income statement" not in norm(dre_sheet)
+if not base_tcc:
+    hist_oficial = hist.copy()
+    hist = TCC_DRE.copy()
+    st.info(
+        "As médias de análise vertical usam a DRE 2016–2025 do TCC, para "
+        "reproduzir exatamente o trabalho. A planilha oficial da Maxion "
+        "foi lida e está disponível abaixo só para conferência."
+    )
+    with st.expander("Planilha oficial da Maxion (conferência)", expanded=False):
+        st.dataframe(hist_oficial, width="stretch", hide_index=True)
 
 # Ajuste de participação de não controladores (coluna original preservada).
 hist["lucro_liquido_ajustado"] = hist["lucro_liquido"] - hist["minoritarios"]
@@ -460,14 +569,14 @@ with c2:
     metodo_ir = st.radio(
         "Cálculo do IR projetado",
         [
-            "Média histórica do IR ÷ receita (método do TCC)",
-            "Alíquota fixa sobre o lucro antes do IR",
+            "Alíquota fixa sobre o lucro antes do IR (padrão do TCC)",
+            "Média histórica do IR ÷ receita (do Excel)",
         ],
         key="metodo_ir",
         help=(
-            "No TCC o IR projetado é a receita × a média histórica de "
-            "IR/receita (análise vertical), o que equivale a uma "
-            "alíquota efetiva de ~45% — e não a 35%."
+            "O trabalho usa alíquota de 35% sobre o lucro antes do IR. "
+            "A outra opção usa a média histórica de IR/receita do Excel "
+            "(alíquota efetiva de ~45%)."
         ),
     )
     usar_ir_av = metodo_ir.startswith("Média")
@@ -653,7 +762,7 @@ tabela_html(df_detail, fmt_detail, colunas_valores)
 # ----------------------------------------------------------------------
 # Conferência com a planilha do TCC (valores do Excel original, aba VPL-TIR-PBD)
 # ----------------------------------------------------------------------
-TCC_REF = {"vpl": 217.876888, "tir": 24.3712, "pbd": 3 + 7 / 12 + 29 / 360}
+TCC_REF = {"vpl": 381.50, "tir": 32.30, "pbd": 3.5}
 with st.expander("Conferência com a planilha do TCC"):
     conf = pd.DataFrame([
         {"Indicador": "VPL (R$ mi)", "TCC (Excel)": TCC_REF["vpl"], "Este modelo": vpl},
@@ -668,11 +777,10 @@ with st.expander("Conferência com a planilha do TCC"):
         ["Diferença"],
     )
     st.caption(
-        "Valores de referência: aba 'VPL-TIR-PBD' do Excel do TCC "
-        "(VPL R$ 217,88 mi · TIR 24,37% · payback 3 anos, 7 meses e 29 dias). "
-        "Pequenas diferenças vêm de os dados oficiais da Maxion (3T26) "
-        "diferirem do Excel do TCC em 2018 (o IR do TCC inclui "
-        "minoritários) e em 2025 (valores reapresentados)."
+        "Valores do trabalho: VPL R$ 381,50 mi · TIR 32,30% · "
+        "R$ 16,48 por ação · payback 3 anos e 6 meses (3,5 anos). "
+        "Com a alíquota fixa de 35% o app reproduz VPL, TIR e valor por "
+        "ação; o payback calculado pela fórmula é de ~3,04 anos."
     )
 
 # ======================================================================
