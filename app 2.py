@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="AutoValuation | TCC", layout="wide")
+st.set_page_config(page_title="AutoValuation | VPL · TIR · Payback", layout="wide")
 
 # ======================================================================
 # PALETA E CSS
@@ -25,7 +25,7 @@ CSS = """
 section[data-testid="stSidebar"] {background: #0f1f45;}
 .block-container {padding-top: 1.2rem; max-width: 1350px;}
 h1, h2, h3 {color: #eef3fb;}
-h2 {border-left: 4px solid #4a8bea; padding-left: 12px; margin-top: 1.6rem;}
+h2 {border-left: 4px solid #4a8bea; padding-left: 12px; margin-top: 1.2rem;}
 
 .hero {
     background: linear-gradient(120deg, #0f2a5e 0%, #1d4a96 55%, #2f78d6 100%);
@@ -636,12 +636,14 @@ st.caption(
     "indicação contrária."
 )
 
-from contextlib import nullcontext
-t_dados = t_prem = t_proj = t_viab = t_dash = t_risco = t_comp = t_rel = nullcontext()
+t_dados, t_prem, t_proj, t_viab, t_risco, t_comp, t_rel = st.tabs([
+    "1 · Dados", "2 · Premissas", "3 · Projeção", "4 · Viabilidade",
+    "5 · Cenários e risco", "6 · Comparar empresas", "7 · Relatório",
+])
 
 # ---------------------------------------------------------------- 1. DADOS
 with t_dados:
-    st.header("1. Importar planilha histórica")
+    st.subheader("Fonte dos dados")
     fonte = st.radio(
         "De onde vêm os dados históricos?",
         ["Exemplo pronto: Iochpe-Maxion (TCC)",
@@ -673,7 +675,6 @@ with t_dados:
 
 # -------------------------------------------------------------- 2. PREMISSAS
 with t_prem:
-    st.header("2. Premissas editáveis")
     st.subheader("Empresa e período histórico")
     p1, p2 = st.columns(2)
     company = p1.text_input("Nome da empresa", value=company_default,
@@ -882,11 +883,6 @@ proj_df = pd.DataFrame(proj_rows)
 
 # ------------------------------------------------------------- 3. PROJEÇÃO
 with t_proj:
-    st.header(f"3. Projeção financeira — {anos_proj[0]} a {anos_proj[-1]}")
-    st.caption(
-        f"Receita-base e médias AV derivadas da planilha carregada, sobre os "
-        f"anos de {lo} a {hi}. Cenário ativo: {cenario.lower()}."
-    )
     st.subheader(f"Diagnóstico histórico — {lo} a {hi}")
     dh = pd.DataFrame({
         "Ano": hist["Ano"], "Receita líquida": hist["receita"],
@@ -928,7 +924,6 @@ with t_proj:
 # ----------------------------------------------------------- 4. VIABILIDADE
 fig_rev = fig_acc = None
 with t_viab:
-    st.header("4. Indicadores de viabilidade — recalculados")
     ok = vpl >= 0
     msg = ("✅ Projeto <b>economicamente viável</b>" if ok
            else "⚠️ Projeto <b>inviável</b> nas premissas atuais")
@@ -967,27 +962,6 @@ with t_viab:
                 ["Fluxo usado (R$ mi)", "Valor presente (R$ mi)",
                  "Acumulado descontado (R$ mi)"])
 
-
-# --------------------------------------------------- 5. DASHBOARD EXECUTIVO
-with t_dash:
-    st.header("5. Dashboard executivo")
-    st.caption(
-        "Painéis dinâmicos calculados a partir da planilha histórica "
-        "importada e das premissas acima."
-    )
-    rev_final = float(proj_df["Receita líquida"].iloc[-1])
-    cagr_p = (rev_final / rev0) ** (1 / H) - 1 if rev0 > 0 else float("nan")
-    margem_liq = proj_df["Lucro líquido (após IR)"] / proj_df["Receita líquida"]
-    resultado_acum = float(proj_df["Lucro líquido (após IR)"].sum())
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(f"Receita {anos_proj[-1]}", f"R$ {br(rev_final, 0)} mi")
-    k2.metric("Crescimento anual da receita (CAGR)", pct(cagr_p * 100),
-              help=f"De {hi} (base) até {anos_proj[-1]}.")
-    k3.metric("Margem média após IR", pct(float(margem_liq.mean()) * 100))
-    k4.metric(f"Resultado acumulado {anos_proj[0]}–{anos_proj[-1]}",
-              f"R$ {br(resultado_acum, 0)} mi")
-    st.write("")
-
     left, right = st.columns([1.15, 1])
     with left:
         h_ = pd.DataFrame({"Ano": hist["Ano"], "Receita": hist["receita"],
@@ -1012,50 +986,6 @@ with t_dash:
         st.plotly_chart(estilo(fig_acc, "Fluxo descontado acumulado — payback (R$ mi)"),
                         width="stretch")
 
-
-    st.divider()
-    st.subheader("Sensibilidade do VPL")
-    st.write("Como o VPL muda quando a TMA/WACC e a alíquota de IR variam."
-             + (" O valor terminal está incluído." if tvg is not None
-                else " O modelo atual não inclui valor terminal por perpetuidade."))
-    waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
-    taxes = sorted(set([0.25, 0.30, 0.34, 0.40, round(tax, 4)]))
-    hl, hr = st.columns([1.2, 1])
-    with hl:
-        z = []
-        for w in waccs:
-            linha = []
-            for t_ in taxes:
-                r_ = modelo(gd_act, md_act, tax_r=t_)
-                linha.append(float(vpl_vec(r_["flow"][None, :], inv, w, tvg)[0]))
-            z.append(linha)
-        fig = go.Figure(go.Heatmap(
-            z=z, x=[f"{t * 100:.1f}%" for t in taxes],
-            y=[f"{w * 100:.1f}%" for w in waccs], zmid=0, colorscale="RdYlGn",
-            text=[[f"{v:,.0f}" for v in r] for r in z], texttemplate="%{text}",
-            hovertemplate="WACC %{y} · IR %{x}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
-        fig.update_xaxes(title="Alíquota de IR")
-        fig.update_yaxes(title="WACC")
-        st.plotly_chart(estilo(fig, "VPL por WACC × alíquota de IR (R$ mi)", h=420),
-                        width="stretch")
-    with hr:
-        st.markdown("**VPL e indicador por ação por taxa de desconto**" if shares > 0
-                    else "**VPL por taxa de desconto**")
-        rows = []
-        for w in waccs:
-            v = float(vpl_vec(res["flow"][None, :], inv, w, tvg)[0])
-            row = {"TMA / WACC": pct(w * 100), "VPL (R$ mi)": v}
-            if shares > 0:
-                row["Indicador por ação (R$)"] = v * 1_000_000 / shares
-            rows.append(row)
-        sens_df = pd.DataFrame(rows)
-        base_idx = int(np.argmin([abs(w - wacc) for w in waccs]))
-        fm = {c: n2 for c in sens_df.columns if c != "TMA / WACC"}
-        tabela_html(sens_df, fm, [c for c in sens_df.columns if c != "TMA / WACC"],
-                    destaque=base_idx)
-        st.caption("Linha destacada = WACC-base. Análise de sensibilidade, não "
-                   "um Football Field completo.")
-
 # ---------------------------------------------------- 5. CENÁRIOS E RISCO
 scen_rows = []
 for nome, (gd_, md_) in SCEN.items():
@@ -1070,7 +1000,6 @@ scen_df = pd.DataFrame(scen_rows)
 
 mc_stats = None
 with t_risco:
-    st.header("6. Cenários e risco")
     st.subheader("Comparação de cenários")
     tabela_html(
         scen_df,
@@ -1085,24 +1014,45 @@ with t_risco:
     fig_sc.add_hline(y=0, line_color="#93a8cc")
     st.plotly_chart(estilo(fig_sc, "VPL por cenário (R$ mi)", h=320), width="stretch")
 
-    st.subheader("Sensibilidade: crescimento × margem")
-    dgs, dms = [-4, -2, 0, 2, 4], [-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5]
-    z2 = []
-    for dm in dms:
-        linha = []
-        for dg in dgs:
-            r_ = modelo(gd_act + dg, md_act + dm)
-            linha.append(float(vpl_vec(r_["flow"][None, :], inv, wacc, tvg)[0]))
-        z2.append(linha)
-    fig = go.Figure(go.Heatmap(
-        z=z2, x=[f"{d:+d} p.p." for d in dgs], y=[f"{m:+.1f} p.p." for m in dms],
-        zmid=0, colorscale="RdYlGn",
-        text=[[f"{v:,.0f}" for v in r] for r in z2], texttemplate="%{text}",
-        hovertemplate="Cresc. %{x} · Margem %{y}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
-    fig.update_xaxes(title="Variação do crescimento anual")
-    fig.update_yaxes(title="Variação da margem antes do IR")
-    st.plotly_chart(estilo(fig, "VPL: crescimento × margem (R$ mi)", h=400),
-                    width="stretch")
+    st.subheader("Sensibilidade do VPL")
+    waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
+    taxes = sorted(set([0.25, 0.30, 0.34, 0.40, round(tax, 4)]))
+    h1, h2 = st.columns(2)
+    with h1:
+        z = []
+        for w in waccs:
+            linha = []
+            for t_ in taxes:
+                r_ = modelo(gd_act, md_act, tax_r=t_)
+                linha.append(float(vpl_vec(r_["flow"][None, :], inv, w, tvg)[0]))
+            z.append(linha)
+        fig = go.Figure(go.Heatmap(
+            z=z, x=[f"{t * 100:.0f}%" for t in taxes],
+            y=[f"{w * 100:.1f}%" for w in waccs], zmid=0, colorscale="RdYlGn",
+            text=[[f"{v:,.0f}" for v in r] for r in z], texttemplate="%{text}",
+            hovertemplate="WACC %{y} · IR %{x}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
+        fig.update_xaxes(title="Alíquota de IR")
+        fig.update_yaxes(title="WACC")
+        st.plotly_chart(estilo(fig, "VPL: WACC × alíquota de IR (R$ mi)", h=400),
+                        width="stretch")
+    with h2:
+        dgs, dms = [-4, -2, 0, 2, 4], [-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5]
+        z2 = []
+        for dm in dms:
+            linha = []
+            for dg in dgs:
+                r_ = modelo(gd_act + dg, md_act + dm)
+                linha.append(float(vpl_vec(r_["flow"][None, :], inv, wacc, tvg)[0]))
+            z2.append(linha)
+        fig = go.Figure(go.Heatmap(
+            z=z2, x=[f"{d:+d} p.p." for d in dgs], y=[f"{m:+.1f} p.p." for m in dms],
+            zmid=0, colorscale="RdYlGn",
+            text=[[f"{v:,.0f}" for v in r] for r in z2], texttemplate="%{text}",
+            hovertemplate="Cresc. %{x} · Margem %{y}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
+        fig.update_xaxes(title="Variação do crescimento anual")
+        fig.update_yaxes(title="Variação da margem antes do IR")
+        st.plotly_chart(estilo(fig, "VPL: crescimento × margem (R$ mi)", h=400),
+                        width="stretch")
 
     st.subheader("Simulação de Monte Carlo")
     st.write("Sorteia variações de crescimento e margem para estimar a "
@@ -1134,7 +1084,7 @@ with t_risco:
 
 # ----------------------------------------------------- 6. COMPARAR EMPRESAS
 with t_comp:
-    st.header("7. Comparar empresas")
+    st.subheader("Comparar empresas")
     st.write("Analise uma empresa, clique em adicionar, troque a planilha na "
              "aba 1 e repita. A tabela abaixo compara todas.")
     st.session_state.setdefault("comparacao", [])
@@ -1245,8 +1195,7 @@ table.tbl th:first-child,table.tbl td:first-child{{text-align:left}}
 
 
 with t_rel:
-    st.divider()
-    st.header("8. Relatório e exportação")
+    st.subheader("Relatório e exportação")
     st.write("Baixe o relatório (abra no navegador e use Imprimir → Salvar como PDF) "
              "ou a planilha completa com premissas, projeção e fluxos.")
     r1, r2 = st.columns(2)
