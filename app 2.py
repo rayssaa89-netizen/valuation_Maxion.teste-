@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="AutoValuation | VPL · TIR · Payback", layout="wide")
+st.set_page_config(page_title="AutoValuation | TCC", layout="wide")
 
 # ======================================================================
 # PALETA E CSS
@@ -25,7 +25,7 @@ CSS = """
 section[data-testid="stSidebar"] {background: #0f1f45;}
 .block-container {padding-top: 1.2rem; max-width: 1350px;}
 h1, h2, h3 {color: #eef3fb;}
-h2 {border-left: 4px solid #4a8bea; padding-left: 12px; margin-top: 1.2rem;}
+h2 {border-left: 4px solid #4a8bea; padding-left: 12px; margin-top: 1.6rem;}
 
 .hero {
     background: linear-gradient(120deg, #0f2a5e 0%, #1d4a96 55%, #2f78d6 100%);
@@ -638,7 +638,7 @@ st.caption(
 
 t_dados, t_prem, t_proj, t_viab, t_risco, t_comp, t_rel = st.tabs([
     "1 · Dados", "2 · Premissas", "3 · Projeção", "4 · Viabilidade",
-    "5 · Cenários e risco", "6 · Comparar empresas", "7 · Relatório",
+    "5 · Cenários e sensibilidade", "6 · Comparar empresas", "7 · Relatório",
 ])
 
 # ---------------------------------------------------------------- 1. DADOS
@@ -737,13 +737,17 @@ with t_prem:
             vals = [extend(r) for r in MAXION_MACRO]
         else:
             vals = [[cagr_def] * H, [2.0] * H, [0.0] * H, [0.0] * H, [0.0] * H]
-        dfm = pd.DataFrame(vals, index=MACRO_ROWS, columns=cols_names)
-        ed = st.data_editor(
-            dfm, key=f"ed_m_{ds_id}_{H}_{hi}", width="stretch",
-            column_config={c: st.column_config.NumberColumn(format="%.4f")
-                           for c in cols_names},
-        )
-        e = ed.fillna(0.0).to_numpy(float) / 100.0
+        macro = []
+        with st.expander("Premissas macroeconômicas — editáveis", expanded=True):
+            for lab, row in zip(MACRO_ROWS, vals):
+                st.markdown(f"**{lab}**")
+                cols_m = st.columns(H)
+                macro.append([
+                    c_.number_input(cn, value=float(v), step=0.1, format="%.4f",
+                                    key=f"mac_{ds_id}_{lab}_{cn}") / 100.0
+                    for c_, cn, v in zip(cols_m, cols_names, row)
+                ])
+        e = np.array(macro)
         den = (1 + e[2]) * (1 + e[3])
         den = np.where(den == 0, 1.0, den)
         growths = (1 + e[0]) * (1 + e[1]) * (1 + e[4]) / den - 1
@@ -998,7 +1002,6 @@ for nome, (gd_, md_) in SCEN.items():
                       "Payback (anos)": p_ if p_ is not None else np.nan})
 scen_df = pd.DataFrame(scen_rows)
 
-mc_stats = None
 with t_risco:
     st.subheader("Comparação de cenários")
     tabela_html(
@@ -1014,73 +1017,37 @@ with t_risco:
     fig_sc.add_hline(y=0, line_color="#93a8cc")
     st.plotly_chart(estilo(fig_sc, "VPL por cenário (R$ mi)", h=320), width="stretch")
 
-    st.subheader("Sensibilidade do VPL")
+    st.subheader("Sensibilidade do VPL à taxa de desconto (WACC)")
+    st.write("Como o VPL e o payback mudam quando a TMA/WACC varia em torno do "
+             "valor-base. O VPL zera quando o WACC iguala a TIR.")
     waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
-    taxes = sorted(set([0.25, 0.30, 0.34, 0.40, round(tax, 4)]))
-    h1, h2 = st.columns(2)
-    with h1:
-        z = []
-        for w in waccs:
-            linha = []
-            for t_ in taxes:
-                r_ = modelo(gd_act, md_act, tax_r=t_)
-                linha.append(float(vpl_vec(r_["flow"][None, :], inv, w, tvg)[0]))
-            z.append(linha)
-        fig = go.Figure(go.Heatmap(
-            z=z, x=[f"{t * 100:.0f}%" for t in taxes],
-            y=[f"{w * 100:.1f}%" for w in waccs], zmid=0, colorscale="RdYlGn",
-            text=[[f"{v:,.0f}" for v in r] for r in z], texttemplate="%{text}",
-            hovertemplate="WACC %{y} · IR %{x}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
-        fig.update_xaxes(title="Alíquota de IR")
-        fig.update_yaxes(title="WACC")
-        st.plotly_chart(estilo(fig, "VPL: WACC × alíquota de IR (R$ mi)", h=400),
+    rows = []
+    for w in waccs:
+        v_, _, p_ = indicadores(res, w)
+        row = {"TMA / WACC": pct(w * 100), "VPL (R$ mi)": v_,
+               "Payback descontado (anos)": p_ if p_ is not None else np.nan}
+        if shares > 0:
+            row["VPL por ação (R$)"] = v_ * 1_000_000 / shares
+        rows.append(row)
+    sens_df = pd.DataFrame(rows)
+    base_idx = int(np.argmin([abs(w - wacc) for w in waccs]))
+    cs1, cs2 = st.columns([1, 1])
+    with cs1:
+        fm = {c: n2 for c in sens_df.columns if c != "TMA / WACC"}
+        tabela_html(sens_df, fm, ["VPL (R$ mi)"], destaque=base_idx)
+        st.caption("Linha destacada = WACC-base. Payback vazio (—) = não "
+                   "recupera o investimento no horizonte.")
+    with cs2:
+        fig = go.Figure(go.Scatter(
+            x=[w * 100 for w in waccs], y=sens_df["VPL (R$ mi)"],
+            mode="lines+markers", line=dict(color=AZUL, width=3),
+            marker=dict(color=[VERDE if v >= 0 else CORAL for v in sens_df["VPL (R$ mi)"]], size=9),
+            hovertemplate="WACC %{x:.1f}%<br>VPL R$ %{y:,.0f} mi<extra></extra>"))
+        fig.add_hline(y=0, line_color="#93a8cc")
+        fig.update_xaxes(title="WACC (%)")
+        fig.update_yaxes(title="VPL (R$ mi)")
+        st.plotly_chart(estilo(fig, "VPL por taxa de desconto (R$ mi)", h=360),
                         width="stretch")
-    with h2:
-        dgs, dms = [-4, -2, 0, 2, 4], [-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5]
-        z2 = []
-        for dm in dms:
-            linha = []
-            for dg in dgs:
-                r_ = modelo(gd_act + dg, md_act + dm)
-                linha.append(float(vpl_vec(r_["flow"][None, :], inv, wacc, tvg)[0]))
-            z2.append(linha)
-        fig = go.Figure(go.Heatmap(
-            z=z2, x=[f"{d:+d} p.p." for d in dgs], y=[f"{m:+.1f} p.p." for m in dms],
-            zmid=0, colorscale="RdYlGn",
-            text=[[f"{v:,.0f}" for v in r] for r in z2], texttemplate="%{text}",
-            hovertemplate="Cresc. %{x} · Margem %{y}<br>VPL R$ %{z:,.0f} mi<extra></extra>"))
-        fig.update_xaxes(title="Variação do crescimento anual")
-        fig.update_yaxes(title="Variação da margem antes do IR")
-        st.plotly_chart(estilo(fig, "VPL: crescimento × margem (R$ mi)", h=400),
-                        width="stretch")
-
-    st.subheader("Simulação de Monte Carlo")
-    st.write("Sorteia variações de crescimento e margem para estimar a "
-             "probabilidade de o projeto ter VPL positivo.")
-    mc1, mc2, mc3 = st.columns(3)
-    n_sim = mc1.select_slider("Número de simulações", [1000, 2000, 5000, 10000],
-                              value=2000, key="n_sim")
-    sd_g = mc2.number_input("Desvio-padrão do crescimento (p.p.)", 0.0, 20.0, 2.0, 0.25, key="sd_g")
-    sd_m = mc3.number_input("Desvio-padrão da margem (p.p.)", 0.0, 10.0, 0.8, 0.1, key="sd_m")
-    rng = np.random.default_rng(42)
-    gd_s = rng.normal(0.0, sd_g, n_sim)
-    md_s = rng.normal(0.0, sd_m, n_sim)
-    g_s = np.array(growths)[None, :] + (gd_act + gd_s)[:, None] / 100.0
-    marg_s = (av["ebt"] + (md_act + md_s) / 100.0)[:, None]
-    _, _, _, _, flow_s = flows_matrix(rev0, g_s, marg_s, tax, da_pct, capex_pct)
-    vpl_s = vpl_vec(flow_s, inv, wacc, tvg)
-    mc_stats = {"prob": float((vpl_s > 0).mean()), "media": float(vpl_s.mean()),
-                "p5": float(np.percentile(vpl_s, 5)),
-                "p95": float(np.percentile(vpl_s, 95))}
-    q1_, q2_, q3_, q4_ = st.columns(4)
-    q1_.metric("Prob. de VPL > 0", pct(mc_stats["prob"] * 100))
-    q2_.metric("VPL médio", f"R$ {br(mc_stats['media'], 0)} mi")
-    q3_.metric("Pior caso (P5)", f"R$ {br(mc_stats['p5'], 0)} mi")
-    q4_.metric("Melhor caso (P95)", f"R$ {br(mc_stats['p95'], 0)} mi")
-    fig = go.Figure(go.Histogram(x=vpl_s, nbinsx=50, marker_color=AZUL))
-    fig.add_vline(x=0, line_color=CORAL, line_dash="dash")
-    fig.update_xaxes(title="VPL (R$ mi)")
-    st.plotly_chart(estilo(fig, "Distribuição do VPL simulado", h=340), width="stretch")
 
 # ----------------------------------------------------- 6. COMPARAR EMPRESAS
 with t_comp:
@@ -1160,11 +1127,6 @@ def build_html():
             f_.update_layout(template="plotly_white", paper_bgcolor="white",
                              plot_bgcolor="white", font=dict(color="#222"))
             graficos += f_.to_html(full_html=False, include_plotlyjs="cdn")
-    mc_txt = ""
-    if mc_stats:
-        mc_txt = (f"<p>Simulação de Monte Carlo ({n_sim} rodadas): probabilidade de "
-                  f"VPL positivo de {br(mc_stats['prob'] * 100)}%; faixa P5–P95 de "
-                  f"R$ {br(mc_stats['p5'], 0)} a R$ {br(mc_stats['p95'], 0)} mi.</p>")
     interp_html = "".join(f"<li>{escape(x)}</li>" for x in interp)
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <title>Relatório de viabilidade — {escape(company)}</title>
@@ -1188,7 +1150,7 @@ table.tbl th:first-child,table.tbl td:first-child{{text-align:left}}
 <h2>Premissas</h2><p>Investimento inicial R$ {br(inv)} mi · alíquota de IR {br(tax * 100)}% · receita-base R$ {br(rev0)} mi · margens: {escape(how.lower())} de {n_win} ano(s).</p>
 <h2>Projeção</h2>{tb(proj_df, fp)}
 <h2>Fluxos e payback</h2>{tb(df_detail, fd)}
-<h2>Cenários</h2>{tb(scen_df, fs)}{mc_txt}
+<h2>Cenários</h2>{tb(scen_df, fs)}
 <h2>Gráficos</h2>{graficos}
 <p style="margin-top:30px;font-size:12px;color:#556">Resultado após IR usado como aproximação do fluxo de caixa. Valide dívida líquida, número de ações e premissas antes de usar como valor justo.</p>
 </body></html>"""
