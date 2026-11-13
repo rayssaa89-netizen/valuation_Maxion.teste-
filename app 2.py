@@ -17,7 +17,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Valuation Iochpe-Maxion | TCC", layout="wide")
 
 # ======================================================================
-# PALETA E CSS (único bloco — cores do banner Maxion)
+# PALETA E CSS
 # ======================================================================
 AZUL, AZUL_ESC, VERDE, CORAL = "#4A8BEA", "#2F5AA6", "#4FD1A5", "#FF7A66"
 
@@ -166,7 +166,7 @@ st.caption(
 
 
 # ======================================================================
-# FUNÇÕES DE LEITURA (lógica inalterada)
+# FUNÇÕES DE LEITURA
 # ======================================================================
 def norm(value):
     if pd.isna(value):
@@ -323,6 +323,18 @@ def pct(v):
     return br(float(v)) + "%" if pd.notna(v) else "—"
 
 
+def payback_texto(pbd):
+    if pbd is None:
+        return "Não recuperado até 2030"
+    anos_p = int(pbd)
+    resto_m = (pbd - anos_p) * 12
+    meses_p = int(resto_m)
+    dias_p = int(round((resto_m - meses_p) * 30))
+    if dias_p >= 30:
+        meses_p, dias_p = meses_p + 1, 0
+    return f"{anos_p} ano(s), {meses_p} mês(es) e {dias_p} dia(s)"
+
+
 # ======================================================================
 # 1. IMPORTAR PLANILHA
 # ======================================================================
@@ -371,9 +383,11 @@ hist["lucro_liquido_ajustado"] = hist["lucro_liquido"] - hist["minoritarios"]
 last_year = int(hist["Ano"].max())
 last_row = hist.loc[hist["Ano"] == last_year].iloc[-1]
 revenue_last = float(last_row["Receita líquida (R$ milhões)"])
+
 ratio_keys = [
     "cpv", "lucro_bruto", "vendas", "admin", "honorarios", "outros",
     "equivalencia", "receitas_financeiras", "despesas_financeiras", "cambio",
+    "imposto_historico",
 ]
 ratio_labels = {
     "cpv": "CPV",
@@ -386,6 +400,7 @@ ratio_labels = {
     "receitas_financeiras": "Receitas financeiras",
     "despesas_financeiras": "Despesas financeiras",
     "cambio": "Variação cambial líquida",
+    "imposto_historico": "Imposto de renda / CSLL",
 }
 for key in ratio_keys:
     hist[key + "_av"] = hist[key] / hist["Receita líquida (R$ milhões)"]
@@ -442,9 +457,24 @@ with c2:
         "TMA / WACC (%)",
         min_value=0.0, max_value=100.0, value=13.0, step=0.25, format="%.2f",
     )
+    metodo_ir = st.radio(
+        "Cálculo do IR projetado",
+        [
+            "Média histórica do IR ÷ receita (método do TCC)",
+            "Alíquota fixa sobre o lucro antes do IR",
+        ],
+        key="metodo_ir",
+        help=(
+            "No TCC o IR projetado é a receita × a média histórica de "
+            "IR/receita (análise vertical), o que equivale a uma "
+            "alíquota efetiva de ~45% — e não a 35%."
+        ),
+    )
+    usar_ir_av = metodo_ir.startswith("Média")
     tax_pct = st.number_input(
-        "Alíquota de IR projetada (%)",
+        "Alíquota de IR fixa (%)",
         min_value=0.0, max_value=100.0, value=35.0, step=1.0, format="%.2f",
+        disabled=usar_ir_av,
     )
 with c3:
     shares = st.number_input(
@@ -452,91 +482,13 @@ with c3:
         min_value=1, value=23143771, step=100000, format="%d",
     )
     st.caption(
-        "Preço por ação calculado como VPL ÷ quantidade de ações. "
-        "Confirme essa convenção com o modelo do TCC."
+        "Indicador por ação = VPL ÷ quantidade de ações. Não é preço-alvo: "
+        "o modelo não desconta dívida líquida nem usa valor terminal."
     )
 
-# Médias da Tabela 3/6 do TCC, em % da receita líquida.
-TCC_AV_PCT = {
-    "lucro_bruto": 11.880614,
-    "admin": -4.916767,
-    "vendas": -0.911925,
-    "despesas_financeiras": -3.970031,
-    "gerais": -0.079407,
-    "receitas_financeiras": 0.788424,
-}
-TCC_LABELS = {
-    "lucro_bruto": "Lucro bruto",
-    "admin": "Despesas administrativas",
-    "vendas": "Despesas comerciais",
-    "despesas_financeiras": "Despesas financeiras",
-    "gerais": "Despesas gerais",
-    "receitas_financeiras": "Receitas financeiras",
-}
-tcc_av = {k: v / 100.0 for k, v in TCC_AV_PCT.items()}
-
-if usar_tcc:
-    tcc_df = pd.DataFrame({
-        "Conta": [TCC_LABELS[k] for k in TCC_AV_PCT],
-        "Média AV (%)": [TCC_AV_PCT[k] for k in TCC_AV_PCT],
-    })
-    tcc_edit = st.data_editor(
-        tcc_df,
-        hide_index=True,
-        disabled=["Conta"],
-        key="tcc_av_editor",
-        width="stretch",
-        column_config={
-            "Média AV (%)": st.column_config.NumberColumn(format="%.4f"),
-        },
-    )
-    for k, v in zip(TCC_AV_PCT, tcc_edit["Média AV (%)"].tolist()):
-        tcc_av[k] = float(v) / 100.0
-    st.caption(
-        "Resultado antes do IR = lucro bruto + despesas administrativas, "
-        "comerciais, financeiras e gerais + receitas financeiras, como na "
-        "Tabela 6 do TCC. Com as premissas padrão, o modelo reproduz "
-        "VPL R$ 381,50 mi, TIR 32,30% e R$ 16,48 por ação."
-    )
-
-with st.expander("Comparar com as médias calculadas da planilha importada"):
-    comp_planilha = {
-        "lucro_bruto": av_means["lucro_bruto"],
-        "admin": av_means["admin"],
-        "vendas": av_means["vendas"],
-        "despesas_financeiras": (
-            av_means["despesas_financeiras"] + av_means["cambio"]
-        ),
-        "gerais": (
-            av_means["honorarios"] + av_means["outros"]
-            + av_means["equivalencia"]
-        ),
-        "receitas_financeiras": av_means["receitas_financeiras"],
-    }
-    comp_rows = []
-    for k in TCC_AV_PCT:
-        pl = comp_planilha[k] * 100
-        comp_rows.append({
-            "Conta": TCC_LABELS[k],
-            "TCC (%)": TCC_AV_PCT[k],
-            "Planilha (%)": pl,
-            "Diferença (p.p.)": pl - TCC_AV_PCT[k],
-        })
-    tabela_html(
-        pd.DataFrame(comp_rows),
-        {
-            "TCC (%)": n2,
-            "Planilha (%)": n2,
-            "Diferença (p.p.)": n2,
-        },
-        ["Diferença (p.p.)"],
-    )
-    st.caption(
-        "Se a diferença não for próxima de zero, a planilha importada "
-        "não tem a mesma estrutura ou os mesmos anos da tabela do TCC."
-    )
-
-# Projeção de receita por premissas.
+# ----------------------------------------------------------------------
+# Projeção de receita por premissas
+# ----------------------------------------------------------------------
 growth_factors = []
 for i in range(5):
     m = assumptions["Crescimento da Maxion (%)"][i]
@@ -567,42 +519,25 @@ projection = []
 net_income = []
 for i, year in enumerate(years_proj):
     rev = revenues[i]
-    if usar_tcc:
-        lb = rev * tcc_av["lucro_bruto"]
-        adm = rev * tcc_av["admin"]
-        com = rev * tcc_av["vendas"]
-        ger = rev * tcc_av["gerais"]
-        fin = rev * tcc_av["despesas_financeiras"]
-        rec = rev * tcc_av["receitas_financeiras"]
-        values = {
-            "cpv": lb - rev,
-            "lucro_bruto": lb,
-            "vendas": com,
-            "admin": adm,
-            "honorarios": 0.0,
-            "outros": ger,
-            "equivalencia": 0.0,
-        }
-        ebit = lb + adm + com + ger
-        financial_result = fin + rec
+    values = {key: rev * av_means[key] for key in ratio_keys}
+    if pd.notna(ebit_av):
+        ebit = rev * float(ebit_av)
     else:
-        values = {key: rev * av_means[key] for key in ratio_keys}
-        if pd.notna(ebit_av):
-            ebit = rev * float(ebit_av)
-        else:
-            ebit = rev * (
-                av_means["lucro_bruto"] + av_means["vendas"]
-                + av_means["admin"] + av_means["honorarios"]
-                + av_means["outros"] + av_means["equivalencia"]
-            )
-        financial_result = (
-            values["receitas_financeiras"]
-            + values["despesas_financeiras"]
-            + values["cambio"]
+        ebit = rev * (
+            av_means["lucro_bruto"] + av_means["vendas"]
+            + av_means["admin"] + av_means["honorarios"]
+            + av_means["outros"] + av_means["equivalencia"]
         )
+    financial_result = (
+        values["receitas_financeiras"]
+        + values["despesas_financeiras"]
+        + values["cambio"]
+    )
     pretax = ebit + financial_result
-    tax = -max(pretax, 0.0) * tax_pct / 100.0
-    minorities = 0.0
+    if usar_ir_av:
+        tax = rev * av_means["imposto_historico"]
+    else:
+        tax = -max(pretax, 0.0) * tax_pct / 100.0
     net = pretax + tax
     net_income.append(net)
     projection.append({
@@ -620,9 +555,13 @@ for i, year in enumerate(years_proj):
         "Resultado financeiro": financial_result,
         "Lucro antes do IR": pretax,
         "IR projetado": tax,
-        "Participação de não controladores considerada no valuation": minorities,
-        "Resultado após IR, antes de não controladores": net,
+        "Resultado após IR": net,
     })
+
+# Alíquota efetiva usada (para a sensibilidade ser coerente com o método).
+pretax_total = sum(p["Lucro antes do IR"] for p in projection)
+tax_total = sum(p["IR projetado"] for p in projection)
+tax_eff = (-tax_total / pretax_total) if pretax_total > 0 else tax_pct / 100.0
 
 # ======================================================================
 # 3. PROJEÇÃO FINANCEIRA
@@ -630,12 +569,12 @@ for i, year in enumerate(years_proj):
 st.header("3. Projeção financeira — 2026 a 2030")
 st.caption(
     f"Receita-base e médias AV derivadas da aba '{dre_sheet}' da "
-    f"planilha carregada. Média AV calculada sobre os anos disponíveis "
-    f"de 2016 a {last_year}; altere premissas para recalcular."
+    f"planilha carregada, sobre os anos disponíveis de 2016 a {last_year}. "
+    f"Alíquota efetiva de IR usada: {pct(tax_eff * 100)}."
 )
 proj_df = pd.DataFrame(projection)
 
-COL_RES = "Resultado após IR, antes de não controladores"
+COL_RES = "Resultado após IR"
 fmt_proj = {}
 for c in proj_df.columns:
     if c not in ["Ano", "Crescimento projetado (%)"]:
@@ -675,7 +614,7 @@ try:
 except Exception:
     irr_pct = None
 
-COL_FLUXO = "Fluxo usado (após IR, antes de não controladores; R$ mi)"
+COL_FLUXO = "Fluxo usado (após IR; R$ mi)"
 COL_VP = "Valor presente (R$ mi)"
 COL_ACUM = "Acumulado descontado (R$ mi)"
 
@@ -690,14 +629,7 @@ for i, (year, flow) in enumerate(zip(years_proj, net_income), start=1):
     if pbd is None and acc >= 0 and pv > 0:
         pbd = (i - 1) + (-before / pv)
 price = (vpl * 1_000_000) / shares
-if pbd is None:
-    payback_text = "Não recuperado até 2030"
-else:
-    anos_p = int(pbd)
-    resto_m = (pbd - anos_p) * 12
-    meses_p = int(resto_m)
-    dias_p = int(round((resto_m - meses_p) * 30))
-    payback_text = f"{anos_p} ano(s), {meses_p} mês(es) e {dias_p} dia(s)"
+payback_text = payback_texto(pbd)
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric(
@@ -710,18 +642,38 @@ if irr_pct is not None:
 else:
     m2.metric("TIR", "Não calculável")
 m3.metric("Payback descontado", payback_text)
-m4.metric("VPL ÷ ações", f"R$ {br(price)}")
-if usar_tcc:
-    st.caption(
-        "Referência do TCC: VPL R$ 381,50 mi · TIR 32,30% · "
-        "R$ 16,48 por ação (com as premissas padrão)."
-    )
+m4.metric("VPL por ação", f"R$ {br(price)}")
 
 df_detail = pd.DataFrame(detail)
 colunas_valores = [COL_FLUXO, COL_VP, COL_ACUM]
 fmt_detail = {c: n2 for c in colunas_valores}
 fmt_detail["Ano"] = lambda v: str(int(v))
 tabela_html(df_detail, fmt_detail, colunas_valores)
+
+# ----------------------------------------------------------------------
+# Conferência com a planilha do TCC (valores do Excel original, aba VPL-TIR-PBD)
+# ----------------------------------------------------------------------
+TCC_REF = {"vpl": 217.876888, "tir": 24.3712, "pbd": 3 + 7 / 12 + 29 / 360}
+with st.expander("Conferência com a planilha do TCC"):
+    conf = pd.DataFrame([
+        {"Indicador": "VPL (R$ mi)", "TCC (Excel)": TCC_REF["vpl"], "Este modelo": vpl},
+        {"Indicador": "TIR (%)", "TCC (Excel)": TCC_REF["tir"],
+         "Este modelo": irr_pct if irr_pct is not None else np.nan},
+        {"Indicador": "Payback (anos)", "TCC (Excel)": TCC_REF["pbd"],
+         "Este modelo": pbd if pbd is not None else np.nan},
+    ])
+    conf["Diferença"] = conf["Este modelo"] - conf["TCC (Excel)"]
+    tabela_html(
+        conf, {"TCC (Excel)": n2, "Este modelo": n2, "Diferença": n2},
+        ["Diferença"],
+    )
+    st.caption(
+        "Valores de referência: aba 'VPL-TIR-PBD' do Excel do TCC "
+        "(VPL R$ 217,88 mi · TIR 24,37% · payback 3 anos, 7 meses e 29 dias). "
+        "Pequenas diferenças vêm de os dados oficiais da Maxion (3T26) "
+        "diferirem do Excel do TCC em 2018 (o IR do TCC inclui "
+        "minoritários) e em 2025 (valores reapresentados)."
+    )
 
 # ======================================================================
 # 5. DASHBOARD EXECUTIVO
@@ -849,13 +801,13 @@ with right2:
 st.divider()
 st.subheader("Sensibilidade do VPL")
 st.write(
-    "Como o VPL muda quando a TMA/WACC e a alíquota de IR variam. "
+    "Como o VPL muda quando a TMA/WACC e a alíquota efetiva de IR variam. "
     "O modelo atual não inclui valor terminal por perpetuidade."
 )
 
 pretax_arr = proj_df["Lucro antes do IR"].to_numpy()
 waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
-taxes = sorted(set([0.25, 0.30, tax_pct / 100.0, 0.40]))
+taxes = sorted(set([0.25, 0.30, 0.35, 0.40, round(tax_eff, 4)]))
 
 
 def vpl_calc(w, t):
@@ -870,7 +822,7 @@ with hl:
     z = [[vpl_calc(w, t) for t in taxes] for w in waccs]
     fig = go.Figure(go.Heatmap(
         z=z,
-        x=[f"{t * 100:.0f}%" for t in taxes],
+        x=[f"{t * 100:.1f}%" for t in taxes],
         y=[f"{w * 100:.1f}%" for w in waccs],
         zmid=0,
         colorscale="RdYlGn",
@@ -881,7 +833,7 @@ with hl:
             "VPL R$ %{z:,.0f} mi<extra></extra>"
         ),
     ))
-    fig.update_xaxes(title="Alíquota de IR")
+    fig.update_xaxes(title="Alíquota efetiva de IR")
     fig.update_yaxes(title="WACC")
     st.plotly_chart(
         estilo(fig, "VPL por WACC × alíquota de IR (R$ mi)", h=420),
@@ -913,7 +865,7 @@ with hr:
     )
 
 # ======================================================================
-# RODAPÉ — um aviso e um download
+# RODAPÉ
 # ======================================================================
 st.divider()
 NOTA = (
