@@ -847,64 +847,6 @@ with right:
         width="stretch",
     )
 
-# ---- Linha 2: cascata e resultado + margem
-left2, right2 = st.columns([1.15, 1])
-
-with left2:
-    u = proj_df.iloc[-1]
-    fig = go.Figure(go.Waterfall(
-        x=[
-            "Receita", "Custos e desp. operacionais",
-            "Resultado financeiro", "IR", "Resultado após IR",
-        ],
-        measure=["absolute", "relative", "relative", "relative", "total"],
-        y=[
-            u["Receita líquida"],
-            u["EBIT projetado"] - u["Receita líquida"],
-            u["Resultado financeiro"],
-            u["IR projetado"],
-            0,
-        ],
-        increasing_marker_color=VERDE,
-        decreasing_marker_color=CORAL,
-        totals_marker_color=AZUL,
-        texttemplate="%{y:,.0f}",
-    ))
-    st.plotly_chart(
-        estilo(fig, f"Da receita ao resultado — {int(u['Ano'])} (R$ mi)"),
-        width="stretch",
-    )
-
-with right2:
-    res = proj_df[COL_RES]
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(
-        go.Bar(
-            x=proj_df["Ano"], y=res, name="Resultado após IR (R$ mi)",
-            marker_color=AZUL,
-            text=[f"{v:,.0f}" for v in res], textposition="outside",
-        ),
-        secondary_y=False,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=proj_df["Ano"], y=margem_liq * 100, name="Margem (%)",
-            mode="lines+markers", line=dict(color=VERDE, width=3),
-        ),
-        secondary_y=True,
-    )
-    fig.update_xaxes(dtick=1)
-    fig.update_yaxes(title_text="R$ mi", secondary_y=False)
-    fig.update_yaxes(title_text="Margem (%)", secondary_y=True, showgrid=False)
-    st.plotly_chart(
-        estilo(fig, "Resultado projetado e margem após IR"),
-        width="stretch",
-    )
-    st.caption(
-        "O resultado após IR é a aproximação usada atualmente; "
-        "não é fluxo de caixa livre validado."
-    )
-
 # ---- Linha 3: sensibilidade
 st.divider()
 st.subheader("Sensibilidade do VPL")
