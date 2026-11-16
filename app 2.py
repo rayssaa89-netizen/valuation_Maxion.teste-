@@ -17,6 +17,7 @@ import streamlit.components.v1 as components
 from valuation import charts as C
 from valuation import data_loader as DL
 from valuation import model as M
+from valuation import simulator as SIM
 
 st.set_page_config(page_title="Valuation Iochpe-Maxion | TCC", page_icon="📈", layout="wide")
 
@@ -237,6 +238,145 @@ rt = rt.set_index("Taxa de desconto (%)")
 st.dataframe(style(rt, 2, highlight_row=round(A.wacc * 100, 2)), width="stretch")
 
 # ======================================================================================
+# 7. Simulador de modelos de valuation (complementar — não altera os resultados do TCC)
+# ======================================================================================
+st.header("Simulador de modelos de valuation")
+st.write("Seção complementar ao trabalho: compara o valor da Iochpe-Maxion por outros modelos de valuation. "
+         "Os resultados do TCC acima (VPL, TIR, payback e VPL ÷ ações) **não são alterados** por esta seção.")
+cx = pd.read_csv(Path(__file__).parent / "data" / "dados_complementares_cvm.csv", sep=";").set_index("ano")
+cx = cx.loc[HIST_START:HIST_END]
+h = hist
+mino_pl = float(h["minoritarios_pl"].iloc[-1]) if "minoritarios_pl" in h else 0.0
+nd_series = M.net_debt_series(h)
+nd_last = float(nd_series.iloc[-1]) if nd_series is not None else 0.0
+
+c1, c2, c3, c4 = st.columns(4)
+shares_out = c1.number_input("Ações em circulação", 1, value=149_770_000, step=100_000, format="%d",
+                             help="DFP 2025 (CVM): 153,72 milhões de ações menos 3,95 milhões em tesouraria. "
+                                  "Diferente das ações a emitir do modelo do TCC.")
+ke = c2.number_input("Taxa de desconto dos modelos (%)", 0.0, 60.0, value=float(wacc_pct), step=0.25, format="%.2f",
+                     help="Por padrão, igual à TMA do trabalho.") / 100
+g_perp = c3.number_input("Crescimento na perpetuidade g (%)", -5.0, 15.0, 3.5, 0.25, format="%.2f",
+                         help="Crescimento de longo prazo, próximo da inflação.") / 100
+price_mkt = c4.number_input("Cotação atual (R$, opcional)", 0.0, value=0.0, step=0.1, format="%.2f",
+                            help="Se informada, o app mostra a diferença entre o valor estimado e a cotação.")
+
+t_cmp, t_fcff, t_div, t_gra, t_mult, t_mc = st.tabs(["📊 Comparação", "FCFF (DCF)", "Dividendos: Gordon e Bazin",
+                                                     "Graham", "Múltiplos", "🎲 Monte Carlo"])
+
+with t_fcff:
+    st.caption("Fluxo de Caixa Livre da Firma (Damodaran): FCFF = EBIT × (1 − IR) + D&A − CapEx − Δ capital de giro, "
+               "descontado pela taxa e somado ao valor terminal de Gordon. A receita e o EBIT são os mesmos da projeção do TCC.")
+    da_def = float(((h["ebitda"] - h["ebit"]) / h["receita"]).mean() * 100)
+    capex_def = float((cx["capex_rs_mil"] / 1000 / h["receita"]).mean() * 100)
+    nwc_def = float((M.nwc_series(h) / h["receita"]).mean() * 100) if "fornecedores" in h else 0.0
+    c1, c2, c3 = st.columns(3)
+    da_p = c1.number_input("D&A (% da receita)", 0.0, 30.0, round(da_def, 2), 0.1,
+                           help=f"Média {HIST_START}–{HIST_END} de (EBITDA − EBIT) ÷ receita.") / 100
+    capex_p = c2.number_input("CapEx (% da receita)", 0.0, 30.0, round(capex_def, 2), 0.1,
+                              help=f"Média {HIST_START}–{HIST_END}: aquisição de imobilizado e intangível (DFC, CVM).") / 100
+    nwc_p = c3.number_input("Capital de giro (% da receita)", -20.0, 60.0, round(nwc_def, 2), 0.5,
+                            help="(Contas a receber + estoques − fornecedores) ÷ receita, média histórica.") / 100
+    c1, c2 = st.columns(2)
+    nd_in = c1.number_input(f"Dívida líquida {HIST_END} (R$ mi)", value=round(nd_last, 1), step=10.0,
+                            help="Empréstimos CP + LP − caixa − aplicações (balanço da planilha).")
+    mino_in = c2.number_input("Não controladores no PL (R$ mi)", value=round(mino_pl, 1), step=10.0)
+    F = SIM.fcff(A, da_p, capex_p, nwc_p, ke, g_perp, nd_in, mino_in, shares_out)
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("Enterprise value", br(F["ev"], 1, "R$ ", " mi"))
+    f2.metric("Valor do acionista", br(F["equity"], 1, "R$ ", " mi"))
+    f3.metric("Valor por ação", br(F["per_share"], prefix="R$ "))
+    f4.metric("Peso do valor terminal", br((F["tv_share"] or 0) * 100, 1, suffix="%"))
+    st.dataframe(style(F["table"].T, 1), width="stretch")
+    st.caption(esc(f"Valor terminal em {proj_years[-1]}: R$ {br(F['tv'], 1)} mi (valor presente R$ {br(F['pv_tv'], 1)} mi). "
+                   f"Valor do acionista = EV − dívida líquida − não controladores."))
+
+with t_div:
+    st.caption("Dividendos pagos aos acionistas controladores (Demonstração dos Fluxos de Caixa, CVM).")
+    div_hist = pd.DataFrame({"Dividendos pagos (R$ mi)": cx["dividendos_pagos_controladores_rs_mil"] / 1000,
+                             "Por ação (R$)": cx["dividendos_pagos_controladores_rs_mil"] * 1000 / shares_out})
+    st.dataframe(style(div_hist.T, 3), width="stretch")
+    c1, c2 = st.columns(2)
+    base_div = c1.radio("Dividendo por ação usado", [f"Média {HIST_END - 4}–{HIST_END}", f"Último ano ({HIST_END})"],
+                        horizontal=True, help="A média reduz o efeito de anos sem dividendos, como 2021.")
+    dpa_default = float(div_hist["Por ação (R$)"].loc[HIST_END - 4:HIST_END].mean() if base_div.startswith("Média")
+                        else div_hist["Por ação (R$)"].loc[HIST_END])
+    dpa = c1.number_input("Dividendo por ação (R$)", 0.0, value=round(dpa_default, 4), step=0.01, format="%.4f",
+                          key=f"dpa_{base_div}")
+    min_yield = c2.number_input("Rendimento mínimo de Bazin (%)", 0.5, 30.0, 6.0, 0.5, format="%.1f") / 100
+    v_gordon, v_bazin = SIM.gordon(dpa, ke, g_perp), SIM.bazin(dpa, min_yield)
+    d1, d2 = st.columns(2)
+    d1.metric("Gordon: D₁ ÷ (ke − g)", br(v_gordon, prefix="R$ ") if v_gordon else "ke precisa ser maior que g")
+    d2.metric(f"Bazin: dividendo ÷ {br(min_yield * 100, 1)}%", br(v_bazin, prefix="R$ "))
+    st.caption("O modelo de Gordon supõe que os dividendos crescem a uma taxa constante g para sempre; "
+               "o método Bazin define um preço-teto para que o dividendo renda pelo menos 6% ao ano.")
+
+with t_gra:
+    st.caption("Número de Graham: preço justo = √(22,5 × LPA × VPA), que combina P/L de 15 e P/VP de 1,5.")
+    lpa_series = h["lucro_liquido"] * 1e6 / shares_out
+    c1, c2 = st.columns(2)
+    base_lpa = c1.radio("Lucro por ação usado", [f"Último ano ({HIST_END})", f"Média {HIST_END - 2}–{HIST_END}"],
+                        horizontal=True)
+    lpa_default = float(lpa_series.loc[HIST_END] if base_lpa.startswith("Último") else lpa_series.loc[HIST_END - 2:HIST_END].mean())
+    lpa = c1.number_input("LPA (R$)", value=round(lpa_default, 4), step=0.01, format="%.4f", key=f"lpa_{base_lpa}",
+                          help="Lucro líquido dos controladores ÷ ações em circulação.")
+    vpa_default = float((h["patrimonio_liquido"].iloc[-1] - mino_pl) * 1e6 / shares_out)
+    vpa = c2.number_input("VPA (R$)", value=round(vpa_default, 4), step=0.1, format="%.4f",
+                          help="Patrimônio líquido dos controladores ÷ ações em circulação.")
+    v_graham = SIM.graham(lpa, vpa)
+    st.metric("Preço justo de Graham", br(v_graham, prefix="R$ ") if v_graham else "Requer LPA e VPA positivos")
+
+with t_mult:
+    st.caption("Avaliação relativa: aplica múltiplos de referência (de empresas comparáveis do setor) aos números da Iochpe-Maxion. "
+               "Os múltiplos abaixo são ilustrativos — ajuste com a média de comparáveis como Randon, Tupy e Marcopolo.")
+    ebitda_last = float(h["ebitda"].iloc[-1])
+    c1, c2 = st.columns(2)
+    pe = c1.number_input("P/L de referência (x)", 0.0, 60.0, 8.0, 0.5, format="%.1f")
+    eveb = c2.number_input("EV/EBITDA de referência (x)", 0.0, 30.0, 4.5, 0.25, format="%.2f")
+    v_pe = SIM.by_pe(pe, lpa)
+    v_eveb = SIM.by_ev_ebitda(eveb, ebitda_last, nd_in, mino_in, shares_out)
+    m1_, m2_ = st.columns(2)
+    m1_.metric("Pelo P/L", br(v_pe, prefix="R$ ") if v_pe else "LPA negativo", help=f"P/L × LPA ({br(lpa, 3)})")
+    m2_.metric("Pelo EV/EBITDA", br(v_eveb, prefix="R$ "),
+               help=esc(f"(Múltiplo × EBITDA {HIST_END} de R$ {br(ebitda_last, 1)} mi − dívida líquida − não controladores) ÷ ações"))
+
+with t_mc:
+    st.caption("Simulação de Monte Carlo sobre o modelo do TCC: sorteia milhares de cenários variando o crescimento da "
+               "receita, a margem EBIT e a TMA em torno das premissas do trabalho, e mostra a distribuição do VPL.")
+    c1, c2, c3, c4 = st.columns(4)
+    n_sim = c1.select_slider("Cenários", [1000, 2000, 5000, 10000, 20000], value=5000)
+    sd_g = c2.number_input("Desvio do crescimento (p.p./ano)", 0.0, 10.0, 2.0, 0.25, format="%.2f")
+    sd_m = c3.number_input("Desvio da margem EBIT (p.p.)", 0.0, 5.0, 0.5, 0.1, format="%.2f")
+    sd_r = c4.number_input("Desvio da TMA (p.p.)", 0.0, 10.0, 1.5, 0.25, format="%.2f")
+    sims = SIM.monte_carlo(A, n_sim, sd_g / 100, sd_m / 100, sd_r / 100)
+    p5, p50, p95 = np.percentile(sims, [5, 50, 95])
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Probabilidade de VPL > 0", br((sims > 0).mean() * 100, 1, suffix="%"))
+    k2.metric("VPL mediano", br(p50, 1, "R$ ", " mi"))
+    k3.metric("Pessimista (5%)", br(p5, 1, "R$ ", " mi"))
+    k4.metric("Otimista (95%)", br(p95, 1, "R$ ", " mi"))
+    st.plotly_chart(C.histogram_vpl(sims, R["vpl"]), key="mc_hist")
+    st.caption(esc(f"Em 90% dos cenários, o VPL fica entre R$ {br(p5, 0)} mi e R$ {br(p95, 0)} mi. "
+                   "Com desvios iguais a zero, a simulação reproduz exatamente o VPL do trabalho."))
+
+with t_cmp:
+    model_values = {"FCFF (DCF)": F["per_share"], "Gordon (dividendos)": v_gordon, "Bazin": v_bazin,
+                    "Graham": v_graham, "Múltiplo P/L": v_pe, "Múltiplo EV/EBITDA": v_eveb}
+    st.plotly_chart(C.football_field(model_values, price_mkt or None), key="football")
+    valid = [v for v in model_values.values() if v is not None and np.isfinite(v)]
+    sim_df = pd.DataFrame({"Valor por ação (R$)": list(model_values.values())}, index=list(model_values))
+    sim_df.index.name = "Modelo"
+    if price_mkt:
+        sim_df["Diferença vs. cotação (%)"] = (sim_df["Valor por ação (R$)"] / price_mkt - 1) * 100
+    st.dataframe(style(sim_df, 2), width="stretch")
+    if valid:
+        st.markdown(esc(f"Média dos modelos: **R$ {br(float(np.mean(valid)))}** · mediana: **R$ {br(float(np.median(valid)))}** "
+                        f"· faixa: R$ {br(min(valid))} a R$ {br(max(valid))} por ação."))
+    st.caption("Os valores por ação desta seção usam as ações em circulação e avaliam a empresa inteira. "
+               "O “VPL ÷ ações” do TCC (R$ 16,48) divide o VPL do investimento pelas ações a emitir, por isso não é "
+               "comparável diretamente. Cada modelo responde a uma pergunta diferente; a dispersão entre eles é normal.")
+
+# ======================================================================================
 # Exportação e metodologia
 # ======================================================================================
 buf = BytesIO()
@@ -250,6 +390,8 @@ with pd.ExcelWriter(buf, engine="openpyxl") as w:
     proj[proj_cols].T.to_excel(w, sheet_name=f"Projecao {proj_years[0]}-{proj_years[-1]}")
     detail.to_excel(w, sheet_name="Fluxos e VPL")
     grid.to_excel(w, sheet_name="Sensibilidade")
+    sim_df.to_excel(w, sheet_name="Simulador de modelos")
+    F["table"].T.to_excel(w, sheet_name="Simulador FCFF")
 st.download_button("⬇️ Baixar análise calculada em Excel", buf.getvalue(), "Valuation_Iochpe_Maxion_calculado.xlsx",
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

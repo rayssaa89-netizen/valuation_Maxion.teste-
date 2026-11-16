@@ -1,6 +1,7 @@
 """Gráficos Plotly do aplicativo."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -111,3 +112,32 @@ def bars(df: pd.DataFrame, cols, title, ytitle="R$ milhões", barmode="group"):
                         hovertemplate="R$ %{y:,.1f} mi")
     fig.update_layout(barmode=barmode)
     return _layout(fig, title, ytitle=ytitle)
+
+
+def football_field(values: dict, market_price: float | None = None):
+    """Valor por ação estimado por cada modelo (barras horizontais)."""
+    items = [(k, v) for k, v in values.items() if v is not None and np.isfinite(v)]
+    names = [k for k, _ in items]
+    vals = [v for _, v in items]
+    fig = go.Figure(go.Bar(y=names, x=vals, orientation="h", marker_color=[SERIES[i % len(SERIES)] for i in range(len(vals))],
+                           text=[f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") for v in vals],
+                           textposition="outside", hovertemplate="%{y}: R$ %{x:,.2f}<extra></extra>", cliponaxis=False))
+    if market_price:
+        fig.add_vline(x=market_price, line_dash="dash", line_color=RED,
+                      annotation_text=f"Cotação R$ {market_price:,.2f}".replace(".", ","), annotation_position="top")
+    fig.update_layout(height=80 + 55 * len(vals), margin=dict(l=10, r=60, t=40, b=10), hovermode="closest",
+                      separators=",.", title="Valor por ação estimado por modelo (R$)", showlegend=False)
+    fig.update_xaxes(title_text="R$ por ação", rangemode="tozero")
+    fig.update_yaxes(autorange="reversed")
+    return fig
+
+
+def histogram_vpl(values, base_vpl: float):
+    fig = go.Figure(go.Histogram(x=values, nbinsx=60, marker_color=LIGHT, hovertemplate="VPL ≈ R$ %{x:,.0f} mi<br>%{y} cenários<extra></extra>"))
+    fig.add_vline(x=0, line_color=RED, line_dash="dash", annotation_text="VPL = 0", annotation_position="top left")
+    fig.add_vline(x=base_vpl, line_color=DARK, annotation_text="Cenário do TCC", annotation_position="top right")
+    fig.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=10), hovermode="closest", separators=",.",
+                      title="Distribuição do VPL simulado (R$ milhões)", showlegend=False, bargap=0.02)
+    fig.update_xaxes(title_text="VPL (R$ milhões)")
+    fig.update_yaxes(title_text="Número de cenários")
+    return fig

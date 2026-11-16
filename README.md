@@ -14,6 +14,9 @@ Aplicativo Streamlit desenvolvido como produto do Trabalho de Graduação
 4. **Indicadores**: VPL, TIR, payback descontado e VPL ÷ ações.
 5. **Dashboards**: receita histórica e projetada, payback, cascata de 2030, resultado e margem após IR.
 6. **Sensibilidade do VPL**: mapa de calor WACC × IR e tabela por taxa de desconto.
+7. **Simulador de modelos de valuation** (complementar, não altera os resultados do TCC): FCFF/DCF com valor
+   terminal, Gordon, Bazin, Graham, múltiplos (P/L e EV/EBITDA) e simulação de Monte Carlo do VPL.
+   CapEx e dividendos vêm da DFP da CVM (`data/dados_complementares_cvm.csv`).
 
 Com as premissas do trabalho, os resultados são: **VPL R$ 381,50 mi · TIR 32,30% · R$ 16,48 por ação** (TMA 13%).
 
