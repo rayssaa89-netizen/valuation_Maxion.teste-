@@ -1,406 +1,944 @@
-"""Valuation Iochpe-Maxion — VPL, TIR e Payback Descontado.
-
-Produto do Trabalho de Graduação em Administração (UNIFATEA, 2026).
-Execute com:  streamlit run app.py
-"""
-from __future__ import annotations
-
-import math
+from html import escape
 from io import BytesIO
 from pathlib import Path
+import math
+import re
+import unicodedata
 
 import numpy as np
+import numpy_financial as npf
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 
-from valuation import charts as C
-from valuation import data_loader as DL
-from valuation import model as M
-from valuation import simulator as SIM
+st.set_page_config(page_title="Valuation Iochpe-Maxion | TCC", layout="wide")
 
-st.set_page_config(page_title="Valuation Iochpe-Maxion | TCC", page_icon="📈", layout="wide")
+# ======================================================================
+# PALETA E CSS (único bloco — cores do banner Maxion)
+# ======================================================================
+AZUL, AZUL_ESC, VERDE, CORAL = "#4A8BEA", "#2F5AA6", "#4FD1A5", "#FF7A66"
 
-SAMPLE = Path(__file__).parent / "data" / "dados_historicos_iochpe_3t26.xlsx"
-HIST_START, HIST_END = 2016, 2025  # período histórico do TCC
+CSS = """
+<style>
+.stApp {background: #08122b;}
+section[data-testid="stSidebar"] {background: #0f1f45;}
+.block-container {padding-top: 1.2rem; max-width: 1350px;}
+h1, h2, h3 {color: #eef3fb;}
+h2 {border-left: 4px solid #4a8bea; padding-left: 12px; margin-top: 1.6rem;}
+
+div[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #0f1f45, #0a1836);
+    border: 1px solid #223c75;
+    border-top: 3px solid #4a8bea;
+    border-radius: 12px;
+    padding: 16px 18px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, .35);
+}
+div[data-testid="stMetricLabel"] {color: #93a8cc !important; font-weight: 600;}
+div[data-testid="stMetricValue"] {color: #eef3fb !important; font-weight: 700;}
+
+div[data-testid="stDataFrame"] {
+    border: 1px solid #223c75; border-radius: 10px; overflow: hidden;
+}
+
+.tbl-wrap {
+    overflow-x: auto; border: 1px solid #223c75;
+    border-radius: 12px; margin: 6px 0 14px 0;
+}
+table.tbl {
+    width: 100%; border-collapse: collapse;
+    font-size: .88rem; color: #eef3fb;
+}
+table.tbl th {
+    background: linear-gradient(180deg, #1d4a96, #163a78);
+    color: #fff; font-weight: 600; text-align: right;
+    padding: 10px 12px; white-space: nowrap;
+    border-bottom: 2px solid #4a8bea;
+}
+table.tbl th:first-child, table.tbl td:first-child {
+    text-align: left; position: sticky; left: 0;
+}
+table.tbl td {
+    padding: 9px 12px; text-align: right; white-space: nowrap;
+    border-bottom: 1px solid #1a2f5e;
+    font-variant-numeric: tabular-nums;
+}
+table.tbl tbody tr:nth-child(odd) td  {background: #0f1f45;}
+table.tbl tbody tr:nth-child(even) td {background: #0b1a3b;}
+table.tbl tbody tr:hover td {background: #1a3470;}
+table.tbl tbody tr.hl td {background: #1d4a96; font-weight: 700;}
+
+.dashboard-note {
+    background: #0f1f45; border-left: 4px solid #4a8bea;
+    padding: 12px 16px; border-radius: 6px; color: #dce7fa;
+}
+.stTabs [data-baseweb="tab"] {font-weight: 600;}
+
+.stApp h1, .stApp h2, .stApp h3, .stApp h4,
+.stApp p, .stApp label,
+[data-testid="stMarkdownContainer"],
+[data-testid="stWidgetLabel"] p {
+    color: #eef3fb !important;
+}
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p {
+    color: #93a8cc !important;
+}
+div[data-testid="stMetricValue"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    font-size: 1.6rem !important;
+}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 
-# ======================================================================================
-# Formatação
-# ======================================================================================
-def br(value, decimals=2, prefix="", suffix=""):
-    if value is None or (isinstance(value, float) and not math.isfinite(value)) or pd.isna(value):
+def estilo(fig, titulo=None, h=360):
+    """Padroniza os gráficos Plotly com a paleta do banner."""
+    fig.update_layout(
+        title=titulo, height=h, template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EEF3FB"), margin=dict(l=10, r=10, t=55, b=10),
+        legend=dict(orientation="h", y=1.14, x=0), hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(255,255,255,.07)")
+    return fig
+
+
+def tabela_html(df, fmt=None, cor_cols=None, destaque=None):
+    """Tabela estilizada (o st.dataframe ignora estilos de tabela)."""
+    fmt = fmt or {}
+    cor_cols = cor_cols or []
+    head = "".join(f"<th>{escape(str(c))}</th>" for c in df.columns)
+    body = ""
+    for i, (_, row) in enumerate(df.reset_index(drop=True).iterrows()):
+        cells = ""
+        for c in df.columns:
+            v = row[c]
+            txt = fmt[c](v) if c in fmt else str(v)
+            style = ""
+            if c in cor_cols:
+                try:
+                    n = float(v)
+                    if n < 0:
+                        style = ' style="color:#ff8b8b;font-weight:600"'
+                    elif n > 0:
+                        style = ' style="color:#75dcff;font-weight:600"'
+                except (TypeError, ValueError):
+                    pass
+            cells += f"<td{style}>{escape(txt)}</td>"
+        cls = "hl" if destaque == i else ""
+        body += f'<tr class="{cls}">{cells}</tr>'
+    html = (
+        '<div class="tbl-wrap"><table class="tbl">'
+        f"<thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody></table></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ======================================================================
+# CABEÇALHO
+# ======================================================================
+arquivo_hero = Path(__file__).parent / "hero_maxion.html"
+
+if arquivo_hero.exists():
+    components.html(
+        arquivo_hero.read_text(encoding="utf-8"),
+        height=320,
+        scrolling=False,
+    )
+else:
+    st.warning("Arquivo hero_maxion.html não encontrado.")
+
+st.title("Valuation Iochpe-Maxion — análise dinâmica")
+st.caption(
+    "Os resultados são recalculados com base no arquivo histórico "
+    "importado e nas premissas editáveis. "
+    "Valores financeiros em R$ milhões, salvo indicação contrária."
+)
+
+
+# ======================================================================
+# FUNÇÕES DE LEITURA (lógica inalterada)
+# ======================================================================
+def norm(value):
+    if pd.isna(value):
+        return ""
+    value = str(value).strip().lower()
+    value = unicodedata.normalize("NFKD", value)
+    value = value.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", value)
+
+
+def find_dre_sheet(xls):
+    for name in xls.sheet_names:
+        n = norm(name)
+        if "dre" in n and "income statement" in n:
+            return name
+    for name in xls.sheet_names:
+        n = norm(name)
+        if "dre" in n or "income statement" in n:
+            return name
+    return None
+
+
+def read_historical_data(file_bytes):
+    xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+    sheet = find_dre_sheet(xls)
+    if sheet is None:
+        raise ValueError(
+            "Não encontrei uma aba de DRE/Income Statement. "
+            "Use a planilha histórica oficial da Maxion."
+        )
+    raw = pd.read_excel(xls, sheet_name=sheet, header=None)
+    if raw.shape[0] < 5 or raw.shape[1] < 5:
+        raise ValueError(
+            "A aba de DRE parece vazia ou tem uma estrutura "
+            "diferente da esperada."
+        )
+
+    header_row = None
+    year_cols = {}
+    for r in range(min(8, len(raw))):
+        found = {}
+        for c, value in enumerate(raw.iloc[r].tolist()):
+            try:
+                y = int(float(value))
+                if 2010 <= y <= 2035:
+                    found[y] = c
+            except (TypeError, ValueError):
+                pass
+        if len(found) >= 3:
+            header_row, year_cols = r, found
+            break
+    if header_row is None:
+        raise ValueError(
+            "Não consegui identificar os cabeçalhos anuais da DRE. "
+            "Confira se a planilha está no formato original."
+        )
+
+    years = [y for y in range(2016, 2026) if y in year_cols]
+    if not years:
+        years = sorted(year_cols)
+    labels = raw.iloc[:, 0].map(norm)
+
+    def row_index(contains, exclude=None):
+        exclude = exclude or []
+        for idx, label in labels.items():
+            if not label:
+                continue
+            if any(t in label for t in contains) and not any(t in label for t in exclude):
+                return idx
+        return None
+
+    revenue_idx = row_index(["receita operacional liquida", "net operating revenue"])
+    gross_idx = row_index(["lucro (prejuizo) bruto", "gross profit"])
+    ebit_idx = row_index(["lucro (prejuizo) operacional (ebit)", "operating income (ebit)"])
+    if revenue_idx is None:
+        revenue_idx = row_index(["receita liquida", "net revenue"])
+    if revenue_idx is None or gross_idx is None:
+        raise ValueError(
+            "Não encontrei Receita Operacional Líquida e Lucro Bruto "
+            "na DRE. Não vou calcular usando números fixos."
+        )
+
+    patterns = {
+        "receita": (["receita operacional liquida", "net operating revenue", "net revenue"], []),
+        "lucro_bruto": (["lucro (prejuizo) bruto", "gross profit"], []),
+        "vendas": (["com vendas", "selling expenses"], []),
+        "admin": (["gerais e administrativas", "general and administrative"], []),
+        "honorarios": (["honorarios da administracao", "management fees"], []),
+        "outros": (["outras despesas/receitas", "other"], ["outras despesas operacionais"]),
+        "equivalencia": (["resultado de equivalencia patrimonial", "equity income"], []),
+        "ebit": (["lucro (prejuizo) operacional (ebit)", "operating income (ebit)"], []),
+        "receitas_financeiras": (["receitas financeiras", "financial revenue"], ["despesas financeiras"]),
+        "despesas_financeiras": (["despesas financeiras", "financial expenses"], []),
+        "cambio": (["variacao cambial liquida", "foreign exchange gains"], []),
+        "antes_ir": (["lucro (prejuizo) antes do imp. de renda", "earnings after financial results"], []),
+        "imposto_historico": (["imp. de renda / contrib. social", "income taxes"], []),
+        "minoritarios": (["participacao de nao controladores", "minority shareholders"], []),
+        "lucro_liquido": (["lucro liquido (prejuizo)", "net income (loss)"], []),
+        "ebitda": (["ebitda"], ["conciliação", "reconciliation"]),
+    }
+    indices = {}
+    for key, (terms, exclude) in patterns.items():
+        indices[key] = row_index(terms, exclude)
+    indices["receita"] = revenue_idx
+    indices["lucro_bruto"] = gross_idx
+    indices["ebit"] = ebit_idx if ebit_idx is not None else indices["ebit"]
+
+    def num_at(idx, year):
+        if idx is None:
+            return np.nan
+        val = raw.iloc[idx, year_cols[year]]
+        return pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0]
+
+    records = []
+    for year in years:
+        revenue = num_at(indices["receita"], year)
+        if pd.isna(revenue) or revenue == 0:
+            continue
+        rec = {
+            "Ano": year,
+            "Receita líquida (R$ milhões)": float(revenue) / 1000.0,
+        }
+        for key, idx in indices.items():
+            if key == "receita":
+                continue
+            val = num_at(idx, year) if idx is not None else np.nan
+            rec[key] = float(val) / 1000.0 if pd.notna(val) else np.nan
+        gross_val = float(num_at(indices["lucro_bruto"], year))
+        rec["cpv"] = (gross_val - float(revenue)) / 1000.0
+        records.append(rec)
+    hist = pd.DataFrame(records).sort_values("Ano")
+    if hist.empty or hist["Ano"].max() < 2024:
+        raise ValueError(
+            "A DRE importada não contém dados anuais suficientes "
+            "(é esperado pelo menos até 2024/2025)."
+        )
+    return hist, sheet, xls.sheet_names
+
+
+def br(value, decimals=2):
+    if value is None:
         return "—"
-    s = f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"{prefix}{s}{suffix}"
+    if isinstance(value, float) and not math.isfinite(value):
+        return "—"
+    txt = f"{value:,.{decimals}f}"
+    return txt.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def esc(text: str) -> str:
-    """Evita que "R$ ... R$" seja interpretado como fórmula LaTeX no Markdown do Streamlit."""
-    return text.replace("$", "\\$")
+def n2(v):
+    return br(float(v)) if pd.notna(v) else "—"
 
 
-def fmt_years(years_float):
-    if years_float is None:
-        return "Não recuperado até o fim da projeção"
-    a, m = divmod(max(0, round(years_float * 12)), 12)
-    return f"{a} ano(s) e {m} mês(es)"
+def pct(v):
+    return br(float(v)) + "%" if pd.notna(v) else "—"
 
 
-def style(df: pd.DataFrame, decimals=2, highlight_row=None):
-    s = df.style.format({c: (lambda v, d=decimals: br(v, d)) for c in df.columns})
-    if highlight_row is not None:
-        s = s.apply(lambda r: ["background-color: rgba(127,167,217,.35); font-weight: 600"
-                               if r.name == highlight_row else "" for _ in r], axis=1)
-    return s
-
-
-@st.cache_data(show_spinner=False)
-def load_excel(file_bytes: bytes, filename: str):
-    return DL.read_workbook(file_bytes, filename)
-
-
-# ======================================================================================
-# Cabeçalho
-# ======================================================================================
-HERO = Path(__file__).parent / "hero_maxion.html"
-if HERO.exists():
-    components.html(HERO.read_text(encoding="utf-8"), height=320, scrolling=False)
-
-st.title("Valuation Iochpe-Maxion — análise de viabilidade econômica")
-st.caption("VPL, TIR e Payback Descontado · Valores em R$ milhões, salvo indicação contrária.")
-
-# ======================================================================================
-# 1. Dados históricos
-# ======================================================================================
-st.header("1. Dados históricos")
-st.write("O aplicativo já vem com a planilha de dados históricos da Iochpe-Maxion usada no trabalho. "
-         "Para atualizar a análise, envie a versão mais recente da planilha, disponível na "
-         "[Central de Downloads do RI da Maxion](https://www.iochpe.com.br/informacoes-ao-mercado/central-de-download/).")
-up = st.file_uploader("Planilha de dados históricos da Maxion (.xlsx ou .xlsm) — opcional", type=["xlsx", "xlsm"])
+# ======================================================================
+# 1. IMPORTAR PLANILHA
+# ======================================================================
+st.header("1. Importar planilha histórica")
+st.write(
+    "Selecione a planilha oficial de dados históricos da Maxion "
+    "(.xlsx ou .xlsm). O aplicativo vai localizar a aba de DRE e "
+    "usar os valores anuais para formar as médias históricas."
+)
+uploaded_file = st.file_uploader(
+    "Escolha o arquivo Excel da Maxion",
+    type=["xlsx", "xlsm"],
+    accept_multiple_files=False,
+    key="historical_workbook_upload",
+    help=(
+        "Clique em Procurar arquivos ou arraste o arquivo para esta "
+        "área. A planilha não precisa estar na pasta do aplicativo."
+    ),
+)
+if uploaded_file is None:
+    st.info(
+        "Aguardando a planilha histórica. Se a janela não abrir no "
+        "Safari, atualize a página ou use o Google Chrome."
+    )
+    st.stop()
 
 try:
-    if up is not None:
-        co = load_excel(up.getvalue(), up.name)
-        if co.profile != "iochpe":
-            st.error("Esta planilha não parece ser da Iochpe-Maxion. Use a planilha de dados históricos do RI da Maxion.")
-            st.stop()
-        st.success(f"Planilha importada: {up.name}")
-    else:
-        co = load_excel(SAMPLE.read_bytes(), SAMPLE.name)
-        st.caption(f"Usando a planilha do trabalho: {SAMPLE.name}")
-except Exception as exc:  # noqa: BLE001
+    hist, dre_sheet, all_sheets = read_historical_data(uploaded_file.getvalue())
+    st.success(
+        f"Arquivo importado: {uploaded_file.name} · DRE identificada "
+        f"na aba '{dre_sheet}' · {len(hist)} anos lidos."
+    )
+    with st.expander("Conferir dados históricos importados", expanded=False):
+        st.dataframe(hist, width="stretch", hide_index=True)
+        st.caption(
+            "Os valores monetários foram convertidos de R$ mil para "
+            "R$ milhões, conforme o cabeçalho da DRE histórica."
+        )
+except Exception as exc:
     st.error(f"Não foi possível interpretar esta planilha: {exc}")
     st.stop()
 
-# Período histórico do TCC: demonstrações de 2016 a 2025 (projeção 2026–2030)
-hist = co.hist.loc[(co.hist.index >= HIST_START) & (co.hist.index <= HIST_END)]
-missing = [y for y in range(HIST_START, HIST_END + 1) if y not in hist.index]
-if missing:
-    st.error(f"A planilha não contém dados anuais de {', '.join(map(str, missing))}. "
-             f"O trabalho usa o período de {HIST_START} a {HIST_END}.")
-    st.stop()
-last_year = HIST_END
-avg_years = list(range(HIST_START, HIST_END + 1))
-st.caption(f"Período analisado: {HIST_START} a {HIST_END}, conforme o trabalho.")
-fixes_period = [f for f in co.quarter_fixes if HIST_START <= f["Ano"] <= HIST_END]
+# Ajuste de participação de não controladores (coluna original preservada).
+hist["lucro_liquido_ajustado"] = hist["lucro_liquido"] - hist["minoritarios"]
 
-if fixes_period:
-    st.info(esc(f"Conferência automática: na planilha da Maxion, a coluna anual de "
-                f"{', '.join(sorted({str(f['Ano']) for f in fixes_period}))} não corresponde à soma dos quatro "
-                f"trimestres em {len(fixes_period)} conta(s). O aplicativo usa a soma 1T + 2T + 3T + 4T."))
-    with st.expander("Ver as contas corrigidas (R$ milhões)"):
-        st.dataframe(style(pd.DataFrame(fixes_period).set_index(["Ano", "Conta"]), 1), width="stretch")
+last_year = int(hist["Ano"].max())
+last_row = hist.loc[hist["Ano"] == last_year].iloc[-1]
+revenue_last = float(last_row["Receita líquida (R$ milhões)"])
+ratio_keys = [
+    "cpv", "lucro_bruto", "vendas", "admin", "honorarios", "outros",
+    "equivalencia", "receitas_financeiras", "despesas_financeiras", "cambio",
+]
+ratio_labels = {
+    "cpv": "CPV",
+    "lucro_bruto": "Lucro bruto",
+    "vendas": "Despesas com vendas",
+    "admin": "Despesas gerais e administrativas",
+    "honorarios": "Honorários da administração",
+    "outros": "Outras despesas/receitas",
+    "equivalencia": "Equivalência patrimonial",
+    "receitas_financeiras": "Receitas financeiras",
+    "despesas_financeiras": "Despesas financeiras",
+    "cambio": "Variação cambial líquida",
+}
+for key in ratio_keys:
+    hist[key + "_av"] = hist[key] / hist["Receita líquida (R$ milhões)"]
+    hist[key + "_av"] = hist[key + "_av"].replace([np.inf, -np.inf], np.nan)
+av_means = {}
+for key in ratio_keys:
+    serie = hist[key + "_av"]
+    av_means[key] = float(serie.mean(skipna=True)) if serie.notna().any() else 0.0
 
-with st.expander("Demonstração do Resultado (DRE) — histórico", expanded=False):
-    dre_cols = [c for c in DL.DRE_LABELS if c in hist.columns]
-    st.dataframe(style(hist[dre_cols].rename(columns=DL.DRE_LABELS).T, 1), width="stretch")
-bp_cols = [c for c in DL.BP_LABELS if c in hist.columns]
-if bp_cols:
-    with st.expander("Balanço Patrimonial (BP) — histórico", expanded=False):
-        st.dataframe(style(hist[bp_cols].dropna(how="all").rename(columns=DL.BP_LABELS).T, 1), width="stretch")
-
-ratios = M.historical_ratios(hist)
-c1, c2 = st.columns(2)
-with c1:
-    st.plotly_chart(C.bars(hist.rename(columns=DL.DRE_LABELS),
-                           ["Receita líquida", "Lucro bruto", "EBIT (lucro operacional)", "Lucro líquido (controladores)"],
-                           "Receita e resultados históricos (R$ milhões)"), key="hist_bars")
-with c2:
-    st.plotly_chart(C.lines(ratios, ["Margem bruta (%)", "Margem EBITDA (%)", "Margem EBIT (%)", "Margem líquida (%)"],
-                            "Margens históricas", suffix="%"), key="hist_margins")
-
-# ======================================================================================
-# 2. Premissas
-# ======================================================================================
+# ======================================================================
+# 2. PREMISSAS EDITÁVEIS
+# ======================================================================
 st.header("2. Premissas editáveis")
-proj_years = list(range(last_year + 1, last_year + 6))
+years_proj = [2026, 2027, 2028, 2029, 2030]
+defaults = {
+    "Crescimento da Maxion (%)": [4.00, 4.50, 4.20, 4.00, 3.80],
+    "Crescimento do PIB (%)": [1.80, 2.00, 2.00, 2.00, 2.00],
+    "Efeito da Selic sobre vendas (%)": [
+        -2.00, 2.00, 1.9607843137, 1.9230769231, 1.8867924528,
+    ],
+    "Efeito da inflação (IPCA) sobre vendas (%)": [4.50, 0, 0, 0, 0],
+    "Crescimento vegetativo (%)": [0.36, 0.34, 0.32, 0.31, 0.29],
+}
+assumptions = {}
 with st.expander("Premissas macroeconômicas — editáveis", expanded=True):
-    st.caption("Crescimento da receita = (1 + Maxion) × (1 + PIB) × (1 + vegetativo) ÷ [(1 + Selic) × (1 + IPCA)] − 1. "
-               "Valores em %; edite as células para simular o cenário econômico do momento.")
-    macro_default = M.default_macro_table(proj_years)
-    macro_default.index = ["Crescimento da Maxion (%)"] + list(macro_default.index[1:])
-    macro = st.data_editor(macro_default, width="stretch", key=f"macro_{last_year}")
-    growth = M.growth_from_macro(macro)
+    for label, values in defaults.items():
+        st.markdown(f"**{label}**")
+        cols = st.columns(5)
+        assumptions[label] = []
+        for col, year, default in zip(cols, years_proj, values):
+            with col:
+                valor = st.number_input(
+                    str(year),
+                    value=float(default),
+                    step=0.1,
+                    format="%.4f",
+                    key=f"{label}_{year}",
+                )
+                assumptions[label].append(valor / 100.0)
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    base_revenue = st.number_input(f"Receita líquida de {last_year} (R$ milhões)", 0.0,
-                                   value=float(round(hist.loc[last_year, "receita"], 3)), step=100.0, format="%.3f",
-                                   help="Preenchida automaticamente pela DRE importada.")
-    investment = st.number_input("Investimento inicial (R$ milhões)", 0.0, value=M.TCC_DEFAULTS["investment"],
-                                 step=10.0, format="%.1f")
+    revenue_override = st.number_input(
+        f"Receita líquida de {last_year} (R$ milhões)",
+        min_value=0.0, value=float(revenue_last), step=100.0, format="%.3f",
+        help="Preenchido pela DRE importada; pode ser ajustado.",
+    )
+    investment = st.number_input(
+        "Investimento inicial (R$ milhões)",
+        min_value=0.0, value=722.1, step=10.0, format="%.3f",
+    )
 with c2:
-    wacc_pct = st.number_input("TMA / WACC (%)", 0.0, 100.0, value=M.TCC_DEFAULTS["wacc"], step=0.25, format="%.2f")
-    tax_pct = st.number_input("Alíquota de IR projetada (%)", 0.0, 100.0, value=M.TCC_DEFAULTS["tax"], step=1.0,
-                              format="%.2f")
+    wacc_pct = st.number_input(
+        "TMA / WACC (%)",
+        min_value=0.0, max_value=100.0, value=13.0, step=0.25, format="%.2f",
+    )
+    tax_pct = st.number_input(
+        "Alíquota de IR projetada (%)",
+        min_value=0.0, max_value=100.0, value=35.0, step=1.0, format="%.2f",
+    )
 with c3:
-    shares = st.number_input("Quantidade de ações a emitir", 1, value=int(M.TCC_DEFAULTS["shares"]), step=100_000,
-                             format="%d")
-    st.caption("Valor por ação = VPL ÷ quantidade de ações a emitir.")
+    shares = st.number_input(
+        "Quantidade de ações (unidades)",
+        min_value=1, value=23143771, step=100000, format="%d",
+    )
+    st.caption(
+        "Preço por ação calculado como VPL ÷ quantidade de ações. "
+        "Confirme essa convenção com o modelo do TCC."
+    )
 
-means = M.av_means(hist, avg_years)
-with st.expander(f"Médias de análise vertical (AV) utilizadas — {avg_years[0]} a {avg_years[-1]}", expanded=False):
-    st.caption("Cada conta da DRE é projetada como a média histórica do seu peso sobre a receita líquida. "
-               "A coluna “Premissa” pode ser editada.")
-    av_df = pd.DataFrame({"Conta": [M.AV_NAMES[k] for k in M.AV_LINES],
-                          "Média histórica (%)": [means[k] * 100 for k in M.AV_LINES],
-                          "Premissa (%)": [means[k] * 100 for k in M.AV_LINES]}, index=M.AV_LINES)
-    av_edit = st.data_editor(av_df, width="stretch", hide_index=True, disabled=["Conta", "Média histórica (%)"],
-                             column_config={"Média histórica (%)": st.column_config.NumberColumn(format="%.2f"),
-                                            "Premissa (%)": st.column_config.NumberColumn(format="%.4f")},
-                             key=f"av_{last_year}")
-av = {k: float(v) / 100 for k, v in zip(M.AV_LINES, av_edit["Premissa (%)"])}
+# Médias da Tabela 3/6 do TCC, em % da receita líquida.
+TCC_AV_PCT = {
+    "lucro_bruto": 11.880614,
+    "admin": -4.916767,
+    "vendas": -0.911925,
+    "despesas_financeiras": -3.970031,
+    "gerais": -0.079407,
+    "receitas_financeiras": 0.788424,
+}
+TCC_LABELS = {
+    "lucro_bruto": "Lucro bruto",
+    "admin": "Despesas administrativas",
+    "vendas": "Despesas comerciais",
+    "despesas_financeiras": "Despesas financeiras",
+    "gerais": "Despesas gerais",
+    "receitas_financeiras": "Receitas financeiras",
+}
+tcc_av = {k: v / 100.0 for k, v in TCC_AV_PCT.items()}
 
-A = M.Assumptions(years=proj_years, growth=growth, base_revenue=base_revenue, av=av, tax=tax_pct / 100,
-                  wacc=wacc_pct / 100, investment=investment, shares=shares)
-proj = M.project(A)
-R = M.evaluate_tcc(A, proj)
+if usar_tcc:
+    tcc_df = pd.DataFrame({
+        "Conta": [TCC_LABELS[k] for k in TCC_AV_PCT],
+        "Média AV (%)": [TCC_AV_PCT[k] for k in TCC_AV_PCT],
+    })
+    tcc_edit = st.data_editor(
+        tcc_df,
+        hide_index=True,
+        disabled=["Conta"],
+        key="tcc_av_editor",
+        width="stretch",
+        column_config={
+            "Média AV (%)": st.column_config.NumberColumn(format="%.4f"),
+        },
+    )
+    for k, v in zip(TCC_AV_PCT, tcc_edit["Média AV (%)"].tolist()):
+        tcc_av[k] = float(v) / 100.0
+    st.caption(
+        "Resultado antes do IR = lucro bruto + despesas administrativas, "
+        "comerciais, financeiras e gerais + receitas financeiras, como na "
+        "Tabela 6 do TCC. Com as premissas padrão, o modelo reproduz "
+        "VPL R$ 381,50 mi, TIR 32,30% e R$ 16,48 por ação."
+    )
 
-# ======================================================================================
-# 3. Projeção
-# ======================================================================================
-st.header(f"3. Projeção financeira — {proj_years[0]} a {proj_years[-1]}")
-proj_cols = ["Crescimento (%)", "Receita líquida", "CPV", "Lucro bruto", "Despesas com vendas", "Despesas G&A",
-             "Honorários da administração", "Outras despesas/receitas", "Equivalência patrimonial", "EBIT",
-             "Resultado financeiro", "Lucro antes do IR", "IR projetado", "Resultado após IR", "Margem após IR (%)"]
-st.dataframe(style(proj[proj_cols].T, 2), width="stretch")
+with st.expander("Comparar com as médias calculadas da planilha importada"):
+    comp_planilha = {
+        "lucro_bruto": av_means["lucro_bruto"],
+        "admin": av_means["admin"],
+        "vendas": av_means["vendas"],
+        "despesas_financeiras": (
+            av_means["despesas_financeiras"] + av_means["cambio"]
+        ),
+        "gerais": (
+            av_means["honorarios"] + av_means["outros"]
+            + av_means["equivalencia"]
+        ),
+        "receitas_financeiras": av_means["receitas_financeiras"],
+    }
+    comp_rows = []
+    for k in TCC_AV_PCT:
+        pl = comp_planilha[k] * 100
+        comp_rows.append({
+            "Conta": TCC_LABELS[k],
+            "TCC (%)": TCC_AV_PCT[k],
+            "Planilha (%)": pl,
+            "Diferença (p.p.)": pl - TCC_AV_PCT[k],
+        })
+    tabela_html(
+        pd.DataFrame(comp_rows),
+        {
+            "TCC (%)": n2,
+            "Planilha (%)": n2,
+            "Diferença (p.p.)": n2,
+        },
+        ["Diferença (p.p.)"],
+    )
+    st.caption(
+        "Se a diferença não for próxima de zero, a planilha importada "
+        "não tem a mesma estrutura ou os mesmos anos da tabela do TCC."
+    )
 
-# ======================================================================================
-# 4. Indicadores
-# ======================================================================================
-st.header("4. Indicadores de viabilidade")
+# Projeção de receita por premissas.
+growth_factors = []
+for i in range(5):
+    m = assumptions["Crescimento da Maxion (%)"][i]
+    pib = assumptions["Crescimento do PIB (%)"][i]
+    selic = assumptions["Efeito da Selic sobre vendas (%)"][i]
+    ipca = assumptions["Efeito da inflação (IPCA) sobre vendas (%)"][i]
+    veg = assumptions["Crescimento vegetativo (%)"][i]
+    denominator = (1 + selic) * (1 + ipca)
+    if denominator:
+        growth_factors.append(((1 + m) * (1 + pib) * (1 + veg) / denominator) - 1)
+    else:
+        growth_factors.append(0.0)
+
+revenues = []
+prev = revenue_override
+for growth in growth_factors:
+    prev *= 1 + growth
+    revenues.append(prev)
+
+ebit_ratio = hist["ebit"] / hist["Receita líquida (R$ milhões)"]
+ebit_ratio = ebit_ratio.replace([np.inf, -np.inf], np.nan)
+if hist["ebit"].notna().any():
+    ebit_av = ebit_ratio.mean(skipna=True)
+else:
+    ebit_av = np.nan
+
+projection = []
+net_income = []
+for i, year in enumerate(years_proj):
+    rev = revenues[i]
+    if usar_tcc:
+        lb = rev * tcc_av["lucro_bruto"]
+        adm = rev * tcc_av["admin"]
+        com = rev * tcc_av["vendas"]
+        ger = rev * tcc_av["gerais"]
+        fin = rev * tcc_av["despesas_financeiras"]
+        rec = rev * tcc_av["receitas_financeiras"]
+        values = {
+            "cpv": lb - rev,
+            "lucro_bruto": lb,
+            "vendas": com,
+            "admin": adm,
+            "honorarios": 0.0,
+            "outros": ger,
+            "equivalencia": 0.0,
+        }
+        ebit = lb + adm + com + ger
+        financial_result = fin + rec
+    else:
+        values = {key: rev * av_means[key] for key in ratio_keys}
+        if pd.notna(ebit_av):
+            ebit = rev * float(ebit_av)
+        else:
+            ebit = rev * (
+                av_means["lucro_bruto"] + av_means["vendas"]
+                + av_means["admin"] + av_means["honorarios"]
+                + av_means["outros"] + av_means["equivalencia"]
+            )
+        financial_result = (
+            values["receitas_financeiras"]
+            + values["despesas_financeiras"]
+            + values["cambio"]
+        )
+    pretax = ebit + financial_result
+    tax = -max(pretax, 0.0) * tax_pct / 100.0
+    minorities = 0.0
+    net = pretax + tax
+    net_income.append(net)
+    projection.append({
+        "Ano": year,
+        "Crescimento projetado (%)": growth_factors[i] * 100,
+        "Receita líquida": rev,
+        "CPV": values["cpv"],
+        "Lucro bruto": values["lucro_bruto"],
+        "Despesas com vendas": values["vendas"],
+        "Despesas G&A": values["admin"],
+        "Honorários da administração": values["honorarios"],
+        "Outras despesas/receitas": values["outros"],
+        "Equivalência patrimonial": values["equivalencia"],
+        "EBIT projetado": ebit,
+        "Resultado financeiro": financial_result,
+        "Lucro antes do IR": pretax,
+        "IR projetado": tax,
+        "Participação de não controladores considerada no valuation": minorities,
+        "Resultado após IR, antes de não controladores": net,
+    })
+
+# ======================================================================
+# 3. PROJEÇÃO FINANCEIRA
+# ======================================================================
+st.header("3. Projeção financeira — 2026 a 2030")
+st.caption(
+    f"Receita-base e médias AV derivadas da aba '{dre_sheet}' da "
+    f"planilha carregada. Média AV calculada sobre os anos disponíveis "
+    f"de 2016 a {last_year}; altere premissas para recalcular."
+)
+proj_df = pd.DataFrame(projection)
+
+COL_RES = "Resultado após IR, antes de não controladores"
+fmt_proj = {}
+for c in proj_df.columns:
+    if c not in ["Ano", "Crescimento projetado (%)"]:
+        fmt_proj[c] = n2
+fmt_proj["Ano"] = lambda v: str(int(v))
+fmt_proj["Crescimento projetado (%)"] = pct
+cor_proj = ["Resultado financeiro", "Lucro antes do IR", "IR projetado", COL_RES]
+tabela_html(proj_df, fmt_proj, cor_proj)
+
+with st.expander("Médias de análise vertical (AV) utilizadas", expanded=False):
+    av_table = pd.DataFrame([
+        {
+            "Conta histórica": ratio_labels[k],
+            "Média AV sobre receita líquida (%)": av_means[k] * 100,
+        }
+        for k in ratio_keys
+    ])
+    tabela_html(
+        av_table,
+        {"Média AV sobre receita líquida (%)": pct},
+        ["Média AV sobre receita líquida (%)"],
+    )
+
+# ======================================================================
+# 4. INDICADORES DE VIABILIDADE
+# ======================================================================
+st.header("4. Indicadores de viabilidade — recalculados")
+wacc = wacc_pct / 100.0
+cashflows = [-float(investment)] + [float(x) for x in net_income]
+vpl = sum(cf / ((1 + wacc) ** t) for t, cf in enumerate(cashflows))
+try:
+    irr = npf.irr(cashflows)
+    if irr is not None and math.isfinite(float(irr)):
+        irr_pct = float(irr * 100)
+    else:
+        irr_pct = None
+except Exception:
+    irr_pct = None
+
+COL_FLUXO = "Fluxo usado (após IR, antes de não controladores; R$ mi)"
+COL_VP = "Valor presente (R$ mi)"
+COL_ACUM = "Acumulado descontado (R$ mi)"
+
+acc = -float(investment)
+pbd = None
+detail = []
+for i, (year, flow) in enumerate(zip(years_proj, net_income), start=1):
+    pv = flow / ((1 + wacc) ** i)
+    before = acc
+    acc += pv
+    detail.append({"Ano": year, COL_FLUXO: flow, COL_VP: pv, COL_ACUM: acc})
+    if pbd is None and acc >= 0 and pv > 0:
+        pbd = (i - 1) + (-before / pv)
+price = (vpl * 1_000_000) / shares
+if pbd is None:
+    payback_text = "Não recuperado até 2030"
+else:
+    anos_p = int(pbd)
+    resto_m = (pbd - anos_p) * 12
+    meses_p = int(resto_m)
+    dias_p = int(round((resto_m - meses_p) * 30))
+    payback_text = f"{anos_p} ano(s), {meses_p} mês(es) e {dias_p} dia(s)"
+
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("VPL", br(R["vpl"], prefix="R$ ", suffix=" mi"))
-m2.metric("TIR", br(R["tir"] * 100, suffix="%") if R["tir"] is not None else "Não calculável")
-m3.metric("Payback descontado", fmt_years(R["payback_desc"]))
-m4.metric("VPL ÷ ações", br(R["por_acao"], prefix="R$ "))
-detail = pd.DataFrame({"Fluxo usado (resultado após IR)": R["flows"], "Valor presente": R["pvs"],
-                       "Acumulado descontado": R["cum"][1:]}, index=proj_years)
-detail.index.name = "Ano"
-st.dataframe(style(detail, 2), width="stretch")
-st.caption("O fluxo usado é o resultado após IR, antes da participação de não controladores, como no trabalho.")
+m1.metric(
+    "VPL", f"R$ {br(vpl)} mi",
+    delta="VPL positivo" if vpl >= 0 else "-VPL negativo",
+)
+if irr_pct is not None:
+    delta_tir = f"{irr_pct - wacc_pct:+.2f} p.p. vs WACC".replace(".", ",")
+    m2.metric("TIR", f"{br(irr_pct)}%", delta=delta_tir)
+else:
+    m2.metric("TIR", "Não calculável")
+m3.metric("Payback descontado", payback_text)
+m4.metric("VPL ÷ ações", f"R$ {br(price)}")
+if usar_tcc:
+    st.caption(
+        "Referência do TCC: VPL R$ 381,50 mi · TIR 32,30% · "
+        "R$ 16,48 por ação (com as premissas padrão)."
+    )
 
-# ======================================================================================
-# 5. Dashboards
-# ======================================================================================
-st.header("5. Dashboards")
-st.subheader("Receita líquida: histórico e projeção")
-st.plotly_chart(C.revenue_hist_proj(hist, proj), key="rev")
-st.subheader("Fluxo descontado acumulado (payback)")
-st.plotly_chart(C.payback_chart(proj_years, investment, R["pvs"], R["cum"], last_year), key="payback")
-st.caption(esc(f"O valor final da linha ({br(R['cum'][-1], 0)}) é o próprio VPL à taxa de {br(wacc_pct)}%."))
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader(f"Da receita ao resultado, {proj_years[-1]}")
-    st.plotly_chart(C.waterfall_year(proj.iloc[-1], proj_years[-1]), key="waterfall")
-with c2:
-    st.subheader("Resultado projetado e margem após IR")
-    st.plotly_chart(C.result_margin(proj), key="result_margin")
-st.caption("O resultado após IR é uma aproximação e não é um fluxo de caixa livre validado.")
+df_detail = pd.DataFrame(detail)
+colunas_valores = [COL_FLUXO, COL_VP, COL_ACUM]
+fmt_detail = {c: n2 for c in colunas_valores}
+fmt_detail["Ano"] = lambda v: str(int(v))
+tabela_html(df_detail, fmt_detail, colunas_valores)
 
-# ======================================================================================
-# 6. Sensibilidade
-# ======================================================================================
-st.header("Sensibilidade do VPL")
-waccs = [w / 100 for w in range(10, 17)]
-taxes = [0.25, 0.30, 0.35, 0.40]
-grid = M.sensitivity_grid(A, waccs, taxes, "tcc")
-st.plotly_chart(C.heatmap(grid, "VPL (R$ mi): WACC × alíquota de IR", "VPL"), key="heatmap")
-st.caption(esc(f"VPL de R$ {br(np.nanmin(grid.values), 0)} mi a R$ {br(np.nanmax(grid.values), 0)} mi. ")
-           + ("O VPL é positivo em todas as combinações." if np.nanmin(grid.values) > 0
-              else "Há combinações com VPL negativo."))
-st.subheader("VPL e indicador por ação por taxa de desconto")
-st.caption("O modelo não inclui valor terminal.")
-rt = M.rate_table(A, sorted(set(np.round(waccs + [A.wacc], 4))), "tcc")
-rt["Taxa de desconto (%)"] = rt["Taxa de desconto (%)"].round(2)
-rt = rt.set_index("Taxa de desconto (%)")
-st.dataframe(style(rt, 2, highlight_row=round(A.wacc * 100, 2)), width="stretch")
+# ======================================================================
+# 5. DASHBOARD EXECUTIVO
+# ======================================================================
+st.header("5. Dashboard executivo")
+st.caption(
+    "Painéis dinâmicos calculados a partir da planilha histórica "
+    "importada e das premissas acima."
+)
 
-# ======================================================================================
-# 7. Simulador de modelos de valuation (complementar — não altera os resultados do TCC)
-# ======================================================================================
-st.header("Simulador de modelos de valuation")
-st.write("Seção complementar ao trabalho: compara o valor da Iochpe-Maxion por outros modelos de valuation. "
-         "Os resultados do TCC acima (VPL, TIR, payback e VPL ÷ ações) **não são alterados** por esta seção.")
-cx = pd.read_csv(Path(__file__).parent / "data" / "dados_complementares_cvm.csv", sep=";").set_index("ano")
-cx = cx.loc[HIST_START:HIST_END]
-h = hist
-mino_pl = float(h["minoritarios_pl"].iloc[-1]) if "minoritarios_pl" in h else 0.0
-nd_series = M.net_debt_series(h)
-nd_last = float(nd_series.iloc[-1]) if nd_series is not None else 0.0
+rev_final = float(proj_df["Receita líquida"].iloc[-1])
+if revenue_override > 0:
+    cagr = (rev_final / revenue_override) ** (1 / len(years_proj)) - 1
+else:
+    cagr = float("nan")
+margem_liq = proj_df[COL_RES] / proj_df["Receita líquida"]
+resultado_acum = float(proj_df[COL_RES].sum())
 
-c1, c2, c3, c4 = st.columns(4)
-shares_out = c1.number_input("Ações em circulação", 1, value=149_770_000, step=100_000, format="%d",
-                             help="DFP 2025 (CVM): 153,72 milhões de ações menos 3,95 milhões em tesouraria. "
-                                  "Diferente das ações a emitir do modelo do TCC.")
-ke = c2.number_input("Taxa de desconto dos modelos (%)", 0.0, 60.0, value=float(wacc_pct), step=0.25, format="%.2f",
-                     help="Por padrão, igual à TMA do trabalho.") / 100
-g_perp = c3.number_input("Crescimento na perpetuidade g (%)", -5.0, 15.0, 3.5, 0.25, format="%.2f",
-                         help="Crescimento de longo prazo, próximo da inflação.") / 100
-price_mkt = c4.number_input("Cotação atual (R$, opcional)", 0.0, value=0.0, step=0.1, format="%.2f",
-                            help="Se informada, o app mostra a diferença entre o valor estimado e a cotação.")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric(f"Receita {years_proj[-1]}", f"R$ {br(rev_final, 0)} mi")
+k2.metric(
+    "Crescimento anual da receita (CAGR)", pct(cagr * 100),
+    help=f"De {last_year} (base) até {years_proj[-1]}.",
+)
+k3.metric("Margem média após IR", pct(float(margem_liq.mean()) * 100))
+k4.metric(
+    "Resultado acumulado 2026–2030", f"R$ {br(resultado_acum, 0)} mi",
+)
 
-t_cmp, t_fcff, t_div, t_gra, t_mult, t_mc = st.tabs(["📊 Comparação", "FCFF (DCF)", "Dividendos: Gordon e Bazin",
-                                                     "Graham", "Múltiplos", "🎲 Monte Carlo"])
+st.write("")
 
-with t_fcff:
-    st.caption("Fluxo de Caixa Livre da Firma (Damodaran): FCFF = EBIT × (1 − IR) + D&A − CapEx − Δ capital de giro, "
-               "descontado pela taxa e somado ao valor terminal de Gordon. A receita e o EBIT são os mesmos da projeção do TCC.")
-    da_def = float(((h["ebitda"] - h["ebit"]) / h["receita"]).mean() * 100)
-    capex_def = float((cx["capex_rs_mil"] / 1000 / h["receita"]).mean() * 100)
-    nwc_def = float((M.nwc_series(h) / h["receita"]).mean() * 100) if "fornecedores" in h else 0.0
-    c1, c2, c3 = st.columns(3)
-    da_p = c1.number_input("D&A (% da receita)", 0.0, 30.0, round(da_def, 2), 0.1,
-                           help=f"Média {HIST_START}–{HIST_END} de (EBITDA − EBIT) ÷ receita.") / 100
-    capex_p = c2.number_input("CapEx (% da receita)", 0.0, 30.0, round(capex_def, 2), 0.1,
-                              help=f"Média {HIST_START}–{HIST_END}: aquisição de imobilizado e intangível (DFC, CVM).") / 100
-    nwc_p = c3.number_input("Capital de giro (% da receita)", -20.0, 60.0, round(nwc_def, 2), 0.5,
-                            help="(Contas a receber + estoques − fornecedores) ÷ receita, média histórica.") / 100
-    c1, c2 = st.columns(2)
-    nd_in = c1.number_input(f"Dívida líquida {HIST_END} (R$ mi)", value=round(nd_last, 1), step=10.0,
-                            help="Empréstimos CP + LP − caixa − aplicações (balanço da planilha).")
-    mino_in = c2.number_input("Não controladores no PL (R$ mi)", value=round(mino_pl, 1), step=10.0)
-    F = SIM.fcff(A, da_p, capex_p, nwc_p, ke, g_perp, nd_in, mino_in, shares_out)
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("Enterprise value", br(F["ev"], 1, "R$ ", " mi"))
-    f2.metric("Valor do acionista", br(F["equity"], 1, "R$ ", " mi"))
-    f3.metric("Valor por ação", br(F["per_share"], prefix="R$ "))
-    f4.metric("Peso do valor terminal", br((F["tv_share"] or 0) * 100, 1, suffix="%"))
-    st.dataframe(style(F["table"].T, 1), width="stretch")
-    st.caption(esc(f"Valor terminal em {proj_years[-1]}: R$ {br(F['tv'], 1)} mi (valor presente R$ {br(F['pv_tv'], 1)} mi). "
-                   f"Valor do acionista = EV − dívida líquida − não controladores."))
+# ---- Linha 1: receita e payback
+left, right = st.columns([1.15, 1])
 
-with t_div:
-    st.caption("Dividendos pagos aos acionistas controladores (Demonstração dos Fluxos de Caixa, CVM).")
-    div_hist = pd.DataFrame({"Dividendos pagos (R$ mi)": cx["dividendos_pagos_controladores_rs_mil"] / 1000,
-                             "Por ação (R$)": cx["dividendos_pagos_controladores_rs_mil"] * 1000 / shares_out})
-    st.dataframe(style(div_hist.T, 3), width="stretch")
-    c1, c2 = st.columns(2)
-    base_div = c1.radio("Dividendo por ação usado", [f"Média {HIST_END - 4}–{HIST_END}", f"Último ano ({HIST_END})"],
-                        horizontal=True, help="A média reduz o efeito de anos sem dividendos, como 2021.")
-    dpa_default = float(div_hist["Por ação (R$)"].loc[HIST_END - 4:HIST_END].mean() if base_div.startswith("Média")
-                        else div_hist["Por ação (R$)"].loc[HIST_END])
-    dpa = c1.number_input("Dividendo por ação (R$)", 0.0, value=round(dpa_default, 4), step=0.01, format="%.4f",
-                          key=f"dpa_{base_div}")
-    min_yield = c2.number_input("Rendimento mínimo de Bazin (%)", 0.5, 30.0, 6.0, 0.5, format="%.1f") / 100
-    v_gordon, v_bazin = SIM.gordon(dpa, ke, g_perp), SIM.bazin(dpa, min_yield)
-    d1, d2 = st.columns(2)
-    d1.metric("Gordon: D₁ ÷ (ke − g)", br(v_gordon, prefix="R$ ") if v_gordon else "ke precisa ser maior que g")
-    d2.metric(f"Bazin: dividendo ÷ {br(min_yield * 100, 1)}%", br(v_bazin, prefix="R$ "))
-    st.caption("O modelo de Gordon supõe que os dividendos crescem a uma taxa constante g para sempre; "
-               "o método Bazin define um preço-teto para que o dividendo renda pelo menos 6% ao ano.")
+with left:
+    h = hist[["Ano", "Receita líquida (R$ milhões)"]]
+    h = h.set_axis(["Ano", "Receita"], axis=1).assign(Tipo="Histórico")
+    p = proj_df[["Ano", "Receita líquida"]]
+    p = p.set_axis(["Ano", "Receita"], axis=1).assign(Tipo="Projetado")
+    fig = px.bar(
+        pd.concat([h, p]), x="Ano", y="Receita", color="Tipo",
+        text_auto=",.0f",
+        color_discrete_map={"Histórico": AZUL_ESC, "Projetado": AZUL},
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_xaxes(dtick=1)
+    st.plotly_chart(
+        estilo(fig, "Receita líquida — histórico e projeção (R$ mi)"),
+        width="stretch",
+    )
 
-with t_gra:
-    st.caption("Número de Graham: preço justo = √(22,5 × LPA × VPA), que combina P/L de 15 e P/VP de 1,5.")
-    lpa_series = h["lucro_liquido"] * 1e6 / shares_out
-    c1, c2 = st.columns(2)
-    base_lpa = c1.radio("Lucro por ação usado", [f"Último ano ({HIST_END})", f"Média {HIST_END - 2}–{HIST_END}"],
-                        horizontal=True)
-    lpa_default = float(lpa_series.loc[HIST_END] if base_lpa.startswith("Último") else lpa_series.loc[HIST_END - 2:HIST_END].mean())
-    lpa = c1.number_input("LPA (R$)", value=round(lpa_default, 4), step=0.01, format="%.4f", key=f"lpa_{base_lpa}",
-                          help="Lucro líquido dos controladores ÷ ações em circulação.")
-    vpa_default = float((h["patrimonio_liquido"].iloc[-1] - mino_pl) * 1e6 / shares_out)
-    vpa = c2.number_input("VPA (R$)", value=round(vpa_default, 4), step=0.1, format="%.4f",
-                          help="Patrimônio líquido dos controladores ÷ ações em circulação.")
-    v_graham = SIM.graham(lpa, vpa)
-    st.metric("Preço justo de Graham", br(v_graham, prefix="R$ ") if v_graham else "Requer LPA e VPA positivos")
+with right:
+    acum = [-float(investment)] + df_detail[COL_ACUM].tolist()
+    anos = ["Inv."] + [str(a) for a in years_proj]
+    cores = [VERDE if v >= 0 else CORAL for v in acum]
+    fig = go.Figure(go.Bar(
+        x=anos, y=acum, marker_color=cores,
+        text=[f"{v:,.0f}" for v in acum], textposition="outside",
+    ))
+    fig.add_hline(y=0, line_color="#93a8cc")
+    st.plotly_chart(
+        estilo(fig, "Fluxo descontado acumulado — payback (R$ mi)"),
+        width="stretch",
+    )
 
-with t_mult:
-    st.caption("Avaliação relativa: aplica múltiplos de referência (de empresas comparáveis do setor) aos números da Iochpe-Maxion. "
-               "Os múltiplos abaixo são ilustrativos — ajuste com a média de comparáveis como Randon, Tupy e Marcopolo.")
-    ebitda_last = float(h["ebitda"].iloc[-1])
-    c1, c2 = st.columns(2)
-    pe = c1.number_input("P/L de referência (x)", 0.0, 60.0, 8.0, 0.5, format="%.1f")
-    eveb = c2.number_input("EV/EBITDA de referência (x)", 0.0, 30.0, 4.5, 0.25, format="%.2f")
-    v_pe = SIM.by_pe(pe, lpa)
-    v_eveb = SIM.by_ev_ebitda(eveb, ebitda_last, nd_in, mino_in, shares_out)
-    m1_, m2_ = st.columns(2)
-    m1_.metric("Pelo P/L", br(v_pe, prefix="R$ ") if v_pe else "LPA negativo", help=f"P/L × LPA ({br(lpa, 3)})")
-    m2_.metric("Pelo EV/EBITDA", br(v_eveb, prefix="R$ "),
-               help=esc(f"(Múltiplo × EBITDA {HIST_END} de R$ {br(ebitda_last, 1)} mi − dívida líquida − não controladores) ÷ ações"))
+# ---- Linha 2: cascata e resultado + margem
+left2, right2 = st.columns([1.15, 1])
 
-with t_mc:
-    st.caption("Simulação de Monte Carlo sobre o modelo do TCC: sorteia milhares de cenários variando o crescimento da "
-               "receita, a margem EBIT e a TMA em torno das premissas do trabalho, e mostra a distribuição do VPL.")
-    c1, c2, c3, c4 = st.columns(4)
-    n_sim = c1.select_slider("Cenários", [1000, 2000, 5000, 10000, 20000], value=5000)
-    sd_g = c2.number_input("Desvio do crescimento (p.p./ano)", 0.0, 10.0, 2.0, 0.25, format="%.2f")
-    sd_m = c3.number_input("Desvio da margem EBIT (p.p.)", 0.0, 5.0, 0.5, 0.1, format="%.2f")
-    sd_r = c4.number_input("Desvio da TMA (p.p.)", 0.0, 10.0, 1.5, 0.25, format="%.2f")
-    sims = SIM.monte_carlo(A, n_sim, sd_g / 100, sd_m / 100, sd_r / 100)
-    p5, p50, p95 = np.percentile(sims, [5, 50, 95])
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Probabilidade de VPL > 0", br((sims > 0).mean() * 100, 1, suffix="%"))
-    k2.metric("VPL mediano", br(p50, 1, "R$ ", " mi"))
-    k3.metric("Pessimista (5%)", br(p5, 1, "R$ ", " mi"))
-    k4.metric("Otimista (95%)", br(p95, 1, "R$ ", " mi"))
-    st.plotly_chart(C.histogram_vpl(sims, R["vpl"]), key="mc_hist")
-    st.caption(esc(f"Em 90% dos cenários, o VPL fica entre R$ {br(p5, 0)} mi e R$ {br(p95, 0)} mi. "
-                   "Com desvios iguais a zero, a simulação reproduz exatamente o VPL do trabalho."))
+with left2:
+    u = proj_df.iloc[-1]
+    fig = go.Figure(go.Waterfall(
+        x=[
+            "Receita", "Custos e desp. operacionais",
+            "Resultado financeiro", "IR", "Resultado após IR",
+        ],
+        measure=["absolute", "relative", "relative", "relative", "total"],
+        y=[
+            u["Receita líquida"],
+            u["EBIT projetado"] - u["Receita líquida"],
+            u["Resultado financeiro"],
+            u["IR projetado"],
+            0,
+        ],
+        increasing_marker_color=VERDE,
+        decreasing_marker_color=CORAL,
+        totals_marker_color=AZUL,
+        texttemplate="%{y:,.0f}",
+    ))
+    st.plotly_chart(
+        estilo(fig, f"Da receita ao resultado — {int(u['Ano'])} (R$ mi)"),
+        width="stretch",
+    )
 
-with t_cmp:
-    model_values = {"FCFF (DCF)": F["per_share"], "Gordon (dividendos)": v_gordon, "Bazin": v_bazin,
-                    "Graham": v_graham, "Múltiplo P/L": v_pe, "Múltiplo EV/EBITDA": v_eveb}
-    st.plotly_chart(C.football_field(model_values, price_mkt or None), key="football")
-    valid = [v for v in model_values.values() if v is not None and np.isfinite(v)]
-    sim_df = pd.DataFrame({"Valor por ação (R$)": list(model_values.values())}, index=list(model_values))
-    sim_df.index.name = "Modelo"
-    if price_mkt:
-        sim_df["Diferença vs. cotação (%)"] = (sim_df["Valor por ação (R$)"] / price_mkt - 1) * 100
-    st.dataframe(style(sim_df, 2), width="stretch")
-    if valid:
-        st.markdown(esc(f"Média dos modelos: **R$ {br(float(np.mean(valid)))}** · mediana: **R$ {br(float(np.median(valid)))}** "
-                        f"· faixa: R$ {br(min(valid))} a R$ {br(max(valid))} por ação."))
-    st.caption("Os valores por ação desta seção usam as ações em circulação e avaliam a empresa inteira. "
-               "O “VPL ÷ ações” do TCC (R$ 16,48) divide o VPL do investimento pelas ações a emitir, por isso não é "
-               "comparável diretamente. Cada modelo responde a uma pergunta diferente; a dispersão entre eles é normal.")
+with right2:
+    res = proj_df[COL_RES]
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Bar(
+            x=proj_df["Ano"], y=res, name="Resultado após IR (R$ mi)",
+            marker_color=AZUL,
+            text=[f"{v:,.0f}" for v in res], textposition="outside",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=proj_df["Ano"], y=margem_liq * 100, name="Margem (%)",
+            mode="lines+markers", line=dict(color=VERDE, width=3),
+        ),
+        secondary_y=True,
+    )
+    fig.update_xaxes(dtick=1)
+    fig.update_yaxes(title_text="R$ mi", secondary_y=False)
+    fig.update_yaxes(title_text="Margem (%)", secondary_y=True, showgrid=False)
+    st.plotly_chart(
+        estilo(fig, "Resultado projetado e margem após IR"),
+        width="stretch",
+    )
+    st.caption(
+        "O resultado após IR é a aproximação usada atualmente; "
+        "não é fluxo de caixa livre validado."
+    )
 
-# ======================================================================================
-# Exportação e metodologia
-# ======================================================================================
-buf = BytesIO()
-with pd.ExcelWriter(buf, engine="openpyxl") as w:
-    pd.DataFrame({"Indicador": ["VPL (R$ mi)", "TIR (%)", "Payback descontado (anos)", "VPL ÷ ações (R$)"],
-                  "Valor": [R["vpl"], R["tir"] * 100 if R["tir"] is not None else None, R["payback_desc"],
-                            R["por_acao"]]}).to_excel(w, sheet_name="Resultados", index=False)
-    macro.to_excel(w, sheet_name="Premissas macro")
-    hist.rename(columns=DL.ALL_LABELS).T.to_excel(w, sheet_name="Historico importado")
-    av_edit.to_excel(w, sheet_name="Medias AV", index=False)
-    proj[proj_cols].T.to_excel(w, sheet_name=f"Projecao {proj_years[0]}-{proj_years[-1]}")
-    detail.to_excel(w, sheet_name="Fluxos e VPL")
-    grid.to_excel(w, sheet_name="Sensibilidade")
-    sim_df.to_excel(w, sheet_name="Simulador de modelos")
-    F["table"].T.to_excel(w, sheet_name="Simulador FCFF")
-st.download_button("⬇️ Baixar análise calculada em Excel", buf.getvalue(), "Valuation_Iochpe_Maxion_calculado.xlsx",
-                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+# ---- Linha 3: sensibilidade
+st.divider()
+st.subheader("Sensibilidade do VPL")
+st.write(
+    "Como o VPL muda quando a TMA/WACC e a alíquota de IR variam. "
+    "O modelo atual não inclui valor terminal por perpetuidade."
+)
 
-with st.expander("Metodologia"):
-    st.markdown("A receita é projetada pelos fatores macroeconômicos; as demais contas, pela média da análise vertical "
-                f"de {avg_years[0]} a {avg_years[-1]}. O IR incide sobre o lucro antes do IR positivo.")
-    st.latex(r"VPL = -I_0 + \sum_{t=1}^{5} \frac{FC_t}{(1+TMA)^t} \qquad \sum_{t=0}^{5}\frac{FC_t}{(1+TIR)^t}=0")
-    st.markdown("O payback descontado é o tempo até o acumulado dos fluxos descontados igualar o investimento inicial. "
-                "Referências: Assaf Neto, Damodaran, Iudícibus e Marion.")
-st.caption("ANSELMO, Rayssa Pfaffenzeller. Valuation da Iochpe-Maxion: Estudo de Análise da Viabilidade Econômica por "
-           "meio de VPL, TIR e PBD. Trabalho de Graduação (Administração) — Centro Universitário Teresa D’Ávila, Lorena, "
-           "2026. Resultados acadêmicos condicionados às premissas; não constituem recomendação de investimento.")
+pretax_arr = proj_df["Lucro antes do IR"].to_numpy()
+waccs = [max(wacc + d, 0.001) for d in (-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03)]
+taxes = sorted(set([0.25, 0.30, tax_pct / 100.0, 0.40]))
+
+
+def vpl_calc(w, t):
+    flows = pretax_arr - np.maximum(pretax_arr, 0) * t
+    desc = sum(f / (1 + w) ** i for i, f in enumerate(flows, 1))
+    return -float(investment) + desc
+
+
+hl, hr = st.columns([1.2, 1])
+
+with hl:
+    z = [[vpl_calc(w, t) for t in taxes] for w in waccs]
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=[f"{t * 100:.0f}%" for t in taxes],
+        y=[f"{w * 100:.1f}%" for w in waccs],
+        zmid=0,
+        colorscale="RdYlGn",
+        text=[[f"{v:,.0f}" for v in r] for r in z],
+        texttemplate="%{text}",
+        hovertemplate=(
+            "WACC %{y} · IR %{x}<br>"
+            "VPL R$ %{z:,.0f} mi<extra></extra>"
+        ),
+    ))
+    fig.update_xaxes(title="Alíquota de IR")
+    fig.update_yaxes(title="WACC")
+    st.plotly_chart(
+        estilo(fig, "VPL por WACC × alíquota de IR (R$ mi)", h=420),
+        width="stretch",
+    )
+
+with hr:
+    st.markdown("**VPL e indicador por ação por taxa de desconto**")
+    rows = []
+    for w in waccs:
+        v = sum(cf / ((1 + w) ** t) for t, cf in enumerate(cashflows))
+        rows.append({
+            "TMA / WACC": pct(w * 100),
+            "VPL (R$ mi)": v,
+            "Indicador por ação (R$)": (v * 1_000_000) / shares,
+        })
+    sens_df = pd.DataFrame(rows)
+    base_idx = int(np.argmin([abs(w - wacc) for w in waccs]))
+    tabela_html(
+        sens_df,
+        {"VPL (R$ mi)": n2, "Indicador por ação (R$)": n2},
+        ["VPL (R$ mi)", "Indicador por ação (R$)"],
+        destaque=base_idx,
+    )
+    st.caption(
+        "Linha destacada = WACC-base. Análise de sensibilidade, não "
+        "um Football Field completo: comparar FCD, múltiplos "
+        "EV/EBITDA, P/L e cotações exige dados específicos."
+    )
+
+# ======================================================================
+# RODAPÉ — um aviso e um download
+# ======================================================================
+st.divider()
+NOTA = (
+    '<div class="dashboard-note"><strong>Nota metodológica:</strong> '
+    "a participação de não controladores é preservada na tabela "
+    "histórica para conferência e não altera os fluxos do valuation. "
+    "O resultado após IR é usado como aproximação do fluxo de caixa. "
+    "Antes de interpretar os resultados como valor justo da "
+    "Iochpe-Maxion, valide o fluxo de caixa, a dívida líquida, o "
+    "número de ações e a metodologia do Excel original do TCC.</div>"
+)
+st.markdown(NOTA, unsafe_allow_html=True)
+
+export_buffer = BytesIO()
+with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
+    hist.to_excel(writer, sheet_name="Historico importado", index=False)
+    proj_df.to_excel(writer, sheet_name="Projecao 2026-2030", index=False)
+    av_table.to_excel(writer, sheet_name="Medias AV", index=False)
+    df_detail.to_excel(writer, sheet_name="Fluxos e VPL", index=False)
+
+st.write("")
+st.download_button(
+    label="⬇️ Baixar análise calculada em Excel",
+    data=export_buffer.getvalue(),
+    file_name="Valuation_Iochpe_Maxion_calculado.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    key="download_valuation_calculado",
+)
