@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from valuation import charts as C
 from valuation import data_loader as DL
@@ -61,6 +62,10 @@ def load_excel(file_bytes: bytes, filename: str):
 # ======================================================================================
 # Cabeçalho
 # ======================================================================================
+HERO = Path(__file__).parent / "hero_maxion.html"
+if HERO.exists():
+    components.html(HERO.read_text(encoding="utf-8"), height=320, scrolling=False)
+
 st.title("Valuation Iochpe-Maxion — análise de viabilidade econômica")
 st.caption("VPL, TIR e Payback Descontado · Valores em R$ milhões, salvo indicação contrária.")
 
